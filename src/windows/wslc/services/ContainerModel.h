@@ -31,6 +31,7 @@ struct ContainerOptions
 {
     std::vector<std::string> Arguments;
     bool Detach = false;
+    std::vector<std::string> EnvironmentVariables;
     bool Interactive = false;
     std::string Name;
     bool Remove = false;

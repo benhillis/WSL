@@ -210,6 +210,32 @@ void SetContainerOptionsFromArgs(CLIExecutionContext& context)
         options.Remove = true;
     }
 
+    if (context.Args.Contains(ArgType::Env))
+    {
+        auto const& envArgs = context.Args.GetAll<ArgType::Env>();
+        options.EnvironmentVariables.reserve(envArgs.size());
+        for (const auto& envArg : envArgs)
+        {
+            auto narrowArg = WideToMultiByte(envArg);
+            if (narrowArg.find('=') == std::string::npos)
+            {
+                // No '=' found - resolve the value from the host environment (Docker-compatible behavior).
+                auto valueLength = GetEnvironmentVariableW(envArg.c_str(), nullptr, 0);
+                if (valueLength > 0)
+                {
+                    std::wstring value(valueLength - 1, L'\0');
+                    GetEnvironmentVariableW(envArg.c_str(), value.data(), valueLength);
+                    options.EnvironmentVariables.emplace_back(narrowArg + "=" + WideToMultiByte(value));
+                }
+                // If the host variable doesn't exist, skip it (Docker-compatible behavior).
+            }
+            else
+            {
+                options.EnvironmentVariables.emplace_back(std::move(narrowArg));
+            }
+        }
+    }
+
     if (context.Args.Contains(ArgType::Command))
     {
         options.Arguments.emplace_back(WideToMultiByte(context.Args.Get<ArgType::Command>()));
