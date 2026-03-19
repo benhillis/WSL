@@ -105,6 +105,7 @@ Abstract:
 #define WSL_TERMINATE_ARG L"-t"
 #define WSL_TERMINATE_ARG_LONG L"--terminate"
 #define WSL_UNINSTALL_ARG L"--uninstall"
+#define WSL_UNINSTALL_ARG_YES_OPTION_LONG L"--yes"
 #define WSL_UNMOUNT_ARG L"--unmount"
 #define WSL_UNREGISTER_ARG L"--unregister"
 #define WSL_UPDATE_ARG L"--update"

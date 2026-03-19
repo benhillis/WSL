@@ -1268,8 +1268,21 @@ int UpdatePackage(std::wstring_view commandLine)
     return wsl::windows::common::wslutil::UpdatePackage(preRelease, false);
 }
 
-int Uninstall()
+int Uninstall(bool skipConfirmation)
 {
+    if (!skipConfirmation && wsl::windows::common::wslutil::IsInteractiveConsole())
+    {
+        wsl::windows::common::wslutil::PrintMessage(
+            Localization::MessageUninstallConfirmation(), stderr);
+
+        wchar_t response = static_cast<wchar_t>(_getwch());
+        wsl::windows::common::wslutil::PrintMessage(L"", stderr); // newline
+        if (response != L'y' && response != L'Y')
+        {
+            return 0;
+        }
+    }
+
     auto logFile = std::filesystem::temp_directory_path() / L"wsl-uninstall-logs.txt";
     auto clearLogs =
         wil::scope_exit_log(WI_DIAGNOSTICS_INFO, [&logFile]() { LOG_IF_WIN32_BOOL_FALSE(DeleteFile(logFile.c_str())); });
@@ -1750,7 +1763,15 @@ int WslMain(_In_ std::wstring_view commandLine)
         }
         else if (argument == WSL_UNINSTALL_ARG)
         {
-            return Uninstall();
+            bool skipConfirmation = false;
+            auto remainingLine = wsl::windows::common::helpers::ConsumeArgument(commandLine, argument);
+            auto nextArg = wsl::windows::common::helpers::ParseArgument(remainingLine);
+            if (nextArg == WSL_UNINSTALL_ARG_YES_OPTION_LONG)
+            {
+                skipConfirmation = true;
+            }
+
+            return Uninstall(skipConfirmation);
         }
         else
         {
