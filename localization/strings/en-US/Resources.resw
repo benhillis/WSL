@@ -276,6 +276,10 @@ and 'wsl.exe --install &lt;Distro&gt;' to install.</value>
   <data name="MessageStatusUnregistering" xml:space="preserve">
     <value>Unregistering.</value>
   </data>
+  <data name="MessageUnregisterComplete" xml:space="preserve">
+    <value>{} was successfully unregistered.</value>
+    <comment>{FixedPlaceholder="{}"}Command line arguments, file names and string inserts should not be translated</comment>
+  </data>
   <data name="MessageUserNotFound" xml:space="preserve">
     <value>User not found.</value>
   </data>

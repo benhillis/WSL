@@ -1248,7 +1248,8 @@ int UnregisterDistribution(_In_ LPCWSTR distributionName)
     const GUID distroGuid = service.GetDistributionId(distributionName, LXSS_GET_DISTRO_ID_LIST_ALL);
     service.UnregisterDistribution(&distroGuid);
     progress.End();
-    wsl::windows::common::wslutil::PrintSystemError(ERROR_SUCCESS);
+    wsl::windows::common::wslutil::PrintMessage(
+        wsl::shared::Localization::MessageUnregisterComplete(distributionName), stdout);
     return 0;
 }
 
