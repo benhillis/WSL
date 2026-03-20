@@ -256,8 +256,15 @@ Return Value:
         Result = poll(&PollDescriptor, 1, Timeout);
         if ((Result <= 0) || ((PollDescriptor.revents & POLLIN) == 0))
         {
-            errno = ETIMEDOUT;
-            Result = -1;
+            // Retry once on timeout to handle transient delays from the Windows host (e.g. vsock listener busy).
+            LOG_ERROR("poll({}) timed out after {}ms, retrying", SocketFd, Timeout);
+            PollDescriptor = {SocketFd, POLLIN, 0};
+            Result = poll(&PollDescriptor, 1, Timeout);
+            if ((Result <= 0) || ((PollDescriptor.revents & POLLIN) == 0))
+            {
+                errno = ETIMEDOUT;
+                Result = -1;
+            }
         }
     }
 
