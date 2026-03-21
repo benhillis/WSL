@@ -181,8 +181,9 @@ void DmesgCollector::WriteToCom1(const gsl::span<char>& Input)
     // serial pipe behavior of waiting for a pipe connection.
     if (m_waitForConnection)
     {
-        if (FAILED(wil::ResultFromException(
-                [&]() { wsl::windows::common::helpers::ConnectPipe(m_com1Pipe.get(), INFINITE, m_exitEvents); })))
+        if (FAILED(wil::ResultFromException([&]() {
+                wsl::windows::common::helpers::ConnectPipe(m_com1Pipe.get(), INFINITE, m_exitEvents);
+            })))
         {
             return;
         }

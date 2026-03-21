@@ -14,7 +14,7 @@ Abstract:
 #pragma once
 #include <windows.h>
 #include "wslcsdk.h"
-#include "wslaservice.h"
+#include "wslc.h"
 #include <stdint.h>
 #include <wil/com.h> // COM helpers
 // #include <wil/resource.h> // handle wrappers
@@ -78,7 +78,7 @@ typedef struct WslcContainerOptionsInternal
     const WslcContainerVolume* volumes;
     uint32_t volumesCount;
     const WslcContainerProcessOptionsInternal* initProcessOptions;
-    WSLAContainerNetworkType networking;
+    WSLCContainerNetworkType networking;
     WslcContainerFlags containerFlags;
 
 } WslcContainerOptionsInternal;
@@ -97,7 +97,7 @@ const WslcContainerOptionsInternal* GetInternalType(const WslcContainerSettings*
 // Use to allocate the actual objects on the heap to keep it alive.
 struct WslcSessionImpl
 {
-    wil::com_ptr<IWSLASession> session;
+    wil::com_ptr<IWSLCSession> session;
     wil::com_ptr<ITerminationCallback> terminationCallback;
 };
 
@@ -105,14 +105,14 @@ WslcSessionImpl* GetInternalType(WslcSession handle);
 
 struct WslcContainerImpl
 {
-    wil::com_ptr<IWSLAContainer> container;
+    wil::com_ptr<IWSLCContainer> container;
 };
 
 WslcContainerImpl* GetInternalType(WslcContainer handle);
 
 struct WslcProcessImpl
 {
-    wil::com_ptr<IWSLAProcess> process;
+    wil::com_ptr<IWSLCProcess> process;
 };
 
 WslcProcessImpl* GetInternalType(WslcProcess handle);

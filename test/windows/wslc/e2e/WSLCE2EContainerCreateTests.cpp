@@ -24,7 +24,7 @@ using namespace WEX::Logging;
 
 class WSLCE2EContainerCreateTests
 {
-    WSLA_TEST_CLASS(WSLCE2EContainerCreateTests)
+    WSLC_TEST_CLASS(WSLCE2EContainerCreateTests)
 
     TEST_CLASS_SETUP(ClassSetup)
     {
@@ -88,7 +88,7 @@ class WSLCE2EContainerCreateTests
         expectedError << L"Image '" << InvalidImage.NameAndTag() << L"' not found, pulling\r\n"
                       << L"pull access denied for library/"
                       << InvalidImage.Name << L", repository does not exist or may require 'docker login': denied: requested access to the resource is denied\r\n"
-                      << L"Error code: WSLA_E_IMAGE_NOT_FOUND\r\n";
+                      << L"Error code: WSLC_E_IMAGE_NOT_FOUND\r\n";
         result.Verify({.Stderr = expectedError.str(), .ExitCode = 1});
     }
 
@@ -136,12 +136,13 @@ class WSLCE2EContainerCreateTests
         auto hostDirectory = VolumeTestFile1.parent_path();
         auto fileName = VolumeTestFile1.filename().wstring();
 
-        auto result = RunWslc(std::format(
-            L"container run --name {} --volume \"{}:/data:ro\" {} cat /data/{}",
-            WslcContainerName,
-            hostDirectory.wstring(),
-            AlpineImage.NameAndTag(),
-            fileName));
+        auto result = RunWslc(
+            std::format(
+                L"container run --name {} --volume \"{}:/data:ro\" {} cat /data/{}",
+                WslcContainerName,
+                hostDirectory.wstring(),
+                AlpineImage.NameAndTag(),
+                fileName));
         result.Verify({.Stdout = L"WSLC Volume Test", .Stderr = L"", .ExitCode = S_OK});
     }
 
@@ -151,12 +152,13 @@ class WSLCE2EContainerCreateTests
 
         auto hostDirectory = VolumeTestFile1.parent_path();
         auto fileName = VolumeTestFile1.filename().wstring();
-        auto result = RunWslc(std::format(
-            L"container run --name {} --volume \"{}:/data\" {} sh -c \"echo -n 'WSLC Volume Test' > /data/{}\"",
-            WslcContainerName,
-            hostDirectory.wstring(),
-            AlpineImage.NameAndTag(),
-            fileName));
+        auto result = RunWslc(
+            std::format(
+                L"container run --name {} --volume \"{}:/data\" {} sh -c \"echo -n 'WSLC Volume Test' > /data/{}\"",
+                WslcContainerName,
+                hostDirectory.wstring(),
+                AlpineImage.NameAndTag(),
+                fileName));
         result.Verify({.Stdout = L"", .Stderr = L"", .ExitCode = S_OK});
 
         // Read all file content
@@ -170,12 +172,13 @@ class WSLCE2EContainerCreateTests
 
         auto hostDirectory = VolumeTestFile1.parent_path();
         auto fileName = VolumeTestFile1.filename().wstring();
-        auto result = RunWslc(std::format(
-            L"container run --name {} --volume \"{}:/data:rw\" {} sh -c \"echo -n 'WSLC Volume Test' > /data/{}\"",
-            WslcContainerName,
-            hostDirectory.wstring(),
-            AlpineImage.NameAndTag(),
-            fileName));
+        auto result = RunWslc(
+            std::format(
+                L"container run --name {} --volume \"{}:/data:rw\" {} sh -c \"echo -n 'WSLC Volume Test' > /data/{}\"",
+                WslcContainerName,
+                hostDirectory.wstring(),
+                AlpineImage.NameAndTag(),
+                fileName));
         result.Verify({.Stdout = L"", .Stderr = L"", .ExitCode = S_OK});
 
         // Read all file content
@@ -191,12 +194,13 @@ class WSLCE2EContainerCreateTests
 
         auto hostDirectory = VolumeTestFile1.parent_path();
         auto fileName = VolumeTestFile1.filename().wstring();
-        auto result = RunWslc(std::format(
-            L"container run --name {} --volume \"{}:/data:ro\" {} sh -c \"echo -n 'WSLC Volume Test' > /data/{}\"",
-            WslcContainerName,
-            hostDirectory.wstring(),
-            AlpineImage.NameAndTag(),
-            fileName));
+        auto result = RunWslc(
+            std::format(
+                L"container run --name {} --volume \"{}:/data:ro\" {} sh -c \"echo -n 'WSLC Volume Test' > /data/{}\"",
+                WslcContainerName,
+                hostDirectory.wstring(),
+                AlpineImage.NameAndTag(),
+                fileName));
         auto errorMessage = std::format(L"sh: can't create /data/{}: Read-only file system\n", fileName);
         result.Verify({.Stdout = L"", .Stderr = errorMessage, .ExitCode = 1});
     }
@@ -210,16 +214,17 @@ class WSLCE2EContainerCreateTests
         auto fileName1 = VolumeTestFile1.filename().wstring();
         auto hostDirectory2 = VolumeTestFile2.parent_path();
         auto fileName2 = VolumeTestFile2.filename().wstring();
-        auto result = RunWslc(std::format(
-            L"container run --name {} --volume \"{}:/data1:rw\" --volume \"{}:/data2:rw\" {} sh -c \"echo -n 'Test1' > "
-            L"/data1/{} && "
-            L"echo -n 'Test2' > /data2/{}\"",
-            WslcContainerName,
-            hostDirectory1.wstring(),
-            hostDirectory2.wstring(),
-            AlpineImage.NameAndTag(),
-            fileName1,
-            fileName2));
+        auto result = RunWslc(
+            std::format(
+                L"container run --name {} --volume \"{}:/data1:rw\" --volume \"{}:/data2:rw\" {} sh -c \"echo -n 'Test1' > "
+                L"/data1/{} && "
+                L"echo -n 'Test2' > /data2/{}\"",
+                WslcContainerName,
+                hostDirectory1.wstring(),
+                hostDirectory2.wstring(),
+                AlpineImage.NameAndTag(),
+                fileName1,
+                fileName2));
 
         result.Verify({.Stdout = L"", .Stderr = L"", .ExitCode = 0});
 
@@ -294,22 +299,26 @@ class WSLCE2EContainerCreateTests
         }
 
         {
-            auto result = RunWslc(std::format(
-                L"container run --name {} --volume C:\\hostPath:/containerPath:invalid_mode {}", WslcContainerName, AlpineImage.NameAndTag()));
+            auto result = RunWslc(
+                std::format(
+                    L"container run --name {} --volume C:\\hostPath:/containerPath:invalid_mode {}",
+                    WslcContainerName,
+                    AlpineImage.NameAndTag()));
             result.Verify({.Stderr = L"Unspecified error \r\nError code: E_FAIL\r\n", .ExitCode = 1});
             EnsureContainerDoesNotExist(WslcContainerName);
         }
 
         {
-            auto result = RunWslc(std::format(
-                L"container run --name {} --volume C:\\hostPath:/containerPath:ro:extra {}", WslcContainerName, AlpineImage.NameAndTag()));
+            auto result = RunWslc(
+                std::format(
+                    L"container run --name {} --volume C:\\hostPath:/containerPath:ro:extra {}", WslcContainerName, AlpineImage.NameAndTag()));
             result.Verify({.Stderr = L"Unspecified error \r\nError code: E_FAIL\r\n", .ExitCode = 1});
             EnsureContainerDoesNotExist(WslcContainerName);
         }
 
         {
-            auto result = RunWslc(std::format(
-                L"container run --name {} --volume C:\\hostPath:/containerPath: {}", WslcContainerName, AlpineImage.NameAndTag()));
+            auto result = RunWslc(
+                std::format(L"container run --name {} --volume C:\\hostPath:/containerPath: {}", WslcContainerName, AlpineImage.NameAndTag()));
             result.Verify({.Stderr = L"Unspecified error \r\nError code: E_FAIL\r\n", .ExitCode = 1});
             EnsureContainerDoesNotExist(WslcContainerName);
         }
@@ -674,13 +683,14 @@ class WSLCE2EContainerCreateTests
         WSL2_TEST_ONLY();
 
         // Start a container with a simple server listening on a port
-        auto result = RunWslc(std::format(
-            L"container run -d --name {} -p {}:{} {} {}",
-            WslcContainerName,
-            HostTestPort1,
-            ContainerTestPort,
-            PythonImage.NameAndTag(),
-            GetPythonHttpServerScript(ContainerTestPort)));
+        auto result = RunWslc(
+            std::format(
+                L"container run -d --name {} -p {}:{} {} {}",
+                WslcContainerName,
+                HostTestPort1,
+                ContainerTestPort,
+                PythonImage.NameAndTag(),
+                GetPythonHttpServerScript(ContainerTestPort)));
         result.Verify({.Stderr = L"", .ExitCode = 0});
 
         // Verify we can connect to the server from the host side
@@ -703,15 +713,16 @@ class WSLCE2EContainerCreateTests
 
         // Start a container with a simple server listening on a port
         // Map two host ports to the same container port
-        auto result = RunWslc(std::format(
-            L"container run -d --name {} -p {}:{} -p {}:{} {} {}",
-            WslcContainerName,
-            HostTestPort1,
-            ContainerTestPort,
-            HostTestPort2,
-            ContainerTestPort,
-            PythonImage.NameAndTag(),
-            GetPythonHttpServerScript(ContainerTestPort)));
+        auto result = RunWslc(
+            std::format(
+                L"container run -d --name {} -p {}:{} -p {}:{} {} {}",
+                WslcContainerName,
+                HostTestPort1,
+                ContainerTestPort,
+                HostTestPort2,
+                ContainerTestPort,
+                PythonImage.NameAndTag(),
+                GetPythonHttpServerScript(ContainerTestPort)));
         result.Verify({.Stderr = L"", .ExitCode = 0});
 
         // From the host side, verify we can connect to both ports
@@ -727,13 +738,14 @@ class WSLCE2EContainerCreateTests
         WSL2_TEST_ONLY();
 
         // Start a container with a simple server listening on a port
-        auto result1 = RunWslc(std::format(
-            L"container run -d --name {} -p {}:{} {} {}",
-            WslcContainerName,
-            HostTestPort1,
-            ContainerTestPort,
-            PythonImage.NameAndTag(),
-            GetPythonHttpServerScript(ContainerTestPort)));
+        auto result1 = RunWslc(
+            std::format(
+                L"container run -d --name {} -p {}:{} {} {}",
+                WslcContainerName,
+                HostTestPort1,
+                ContainerTestPort,
+                PythonImage.NameAndTag(),
+                GetPythonHttpServerScript(ContainerTestPort)));
         result1.Verify({.Stderr = L"", .ExitCode = 0});
 
         // Attempt to start another container mapping the same host port

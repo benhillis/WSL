@@ -84,11 +84,13 @@ ProcessOutput WaitForProcessOutput(WslcProcess process, std::chrono::millisecond
     ProcessOutput output;
     wsl::windows::common::relay::MultiHandleWait io;
 
-    io.AddHandle(std::make_unique<wsl::windows::common::relay::ReadHandle>(
-        std::move(ownedStdout), [&](const auto& buffer) { output.stdoutOutput.append(buffer.data(), buffer.size()); }));
+    io.AddHandle(std::make_unique<wsl::windows::common::relay::ReadHandle>(std::move(ownedStdout), [&](const auto& buffer) {
+        output.stdoutOutput.append(buffer.data(), buffer.size());
+    }));
 
-    io.AddHandle(std::make_unique<wsl::windows::common::relay::ReadHandle>(
-        std::move(ownedStderr), [&](const auto& buffer) { output.stderrOutput.append(buffer.data(), buffer.size()); }));
+    io.AddHandle(std::make_unique<wsl::windows::common::relay::ReadHandle>(std::move(ownedStderr), [&](const auto& buffer) {
+        output.stderrOutput.append(buffer.data(), buffer.size());
+    }));
 
     auto timeoutTime = std::chrono::steady_clock::now() + timeout;
     io.Run(timeout);
@@ -163,7 +165,7 @@ ProcessOutput RunContainerAndCapture(
 
 class WslcSdkTests
 {
-    WSLA_TEST_CLASS(WslcSdkTests)
+    WSLC_TEST_CLASS(WslcSdkTests)
 
     wil::unique_mta_usage_cookie m_mtaCookie;
     WSADATA m_wsadata;
@@ -182,7 +184,7 @@ class WslcSdkTests
         THROW_IF_FAILED(CoIncrementMTAUsage(&m_mtaCookie));
         THROW_IF_WIN32_ERROR(WSAStartup(MAKEWORD(2, 2), &m_wsadata));
 
-        // Use the same storage path as WSLA runtime tests to reduce pull overhead.
+        // Use the same storage path as WSLC runtime tests to reduce pull overhead.
         m_storagePath = std::filesystem::current_path() / "test-storage";
 
         // Build session settings using the WSLC SDK.
@@ -364,7 +366,7 @@ class WslcSdkTests
             WslcPullImageOptions opts{};
             opts.uri = "does-not:exist";
             wil::unique_cotaskmem_string errorMsg;
-            VERIFY_ARE_EQUAL(WslcPullSessionImage(m_defaultSession, &opts, &errorMsg), WSLA_E_IMAGE_NOT_FOUND);
+            VERIFY_ARE_EQUAL(WslcPullSessionImage(m_defaultSession, &opts, &errorMsg), WSLC_E_IMAGE_NOT_FOUND);
 
             // An error message should be present.
             VERIFY_IS_NOT_NULL(errorMsg.get());
@@ -638,7 +640,7 @@ class WslcSdkTests
 
             WslcContainer container = nullptr;
             wil::unique_cotaskmem_string errorMsg;
-            VERIFY_ARE_EQUAL(WslcCreateContainer(m_defaultSession, &containerSettings, &container, &errorMsg), WSLA_E_IMAGE_NOT_FOUND);
+            VERIFY_ARE_EQUAL(WslcCreateContainer(m_defaultSession, &containerSettings, &container, &errorMsg), WSLC_E_IMAGE_NOT_FOUND);
             VERIFY_IS_NULL(container);
         }
 

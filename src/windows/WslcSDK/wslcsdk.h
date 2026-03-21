@@ -187,9 +187,11 @@ STDAPI WslcReleaseContainer(_In_ WslcContainer container);
 
 // GENERAL CONTAINER MANAGEMENT
 
-#define WSLC_CONTAINER_ID_LENGTH 65 // 64 chars + null
+#ifndef WSLC_CONTAINER_ID_LENGTH
+#define WSLC_CONTAINER_ID_LENGTH 64
+#endif
 
-STDAPI WslcGetContainerID(WslcContainer container, CHAR containerId[WSLC_CONTAINER_ID_LENGTH]);
+STDAPI WslcGetContainerID(WslcContainer container, CHAR containerId[WSLC_CONTAINER_ID_LENGTH + 1]);
 
 STDAPI WslcGetContainerInitProcess(_In_ WslcContainer container, _Out_ WslcProcess* initProcess);
 

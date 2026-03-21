@@ -16,7 +16,7 @@ Abstract:
 #include "wslutil.h"
 #include "WslPluginApi.h"
 #include "wslinstallerservice.h"
-#include "wslaservice.h"
+#include "wslc.h"
 
 #include "ConsoleProgressBar.h"
 #include "ExecutionContext.h"
@@ -87,7 +87,7 @@ static const std::map<HRESULT, LPCWSTR> g_commonErrors{
     X(WSL_E_INVALID_JSON),
     X(WSL_E_VM_CRASHED),
     X(WSL_E_NOT_A_LINUX_DISTRO),
-    X(WSLA_E_CONTAINER_PREFIX_AMBIGUOUS),
+    X(WSLC_E_CONTAINER_PREFIX_AMBIGUOUS),
     X(E_ACCESSDENIED),
     X_WIN32(ERROR_NOT_FOUND),
     X_WIN32(ERROR_VERSION_PARSE_ERROR),
@@ -148,8 +148,8 @@ static const std::map<HRESULT, LPCWSTR> g_commonErrors{
     X(WININET_E_TIMEOUT),
     X_WIN32(ERROR_INVALID_SID),
     X_WIN32(ERROR_INVALID_STATE),
-    X(WSLA_E_IMAGE_NOT_FOUND),
-    X(WSLA_E_CONTAINER_NOT_FOUND),
+    X(WSLC_E_IMAGE_NOT_FOUND),
+    X(WSLC_E_CONTAINER_NOT_FOUND),
     X_WIN32(RPC_S_SERVER_UNAVAILABLE),
     X_WIN32(ERROR_ELEVATION_REQUIRED)};
 
@@ -383,8 +383,9 @@ std::wstring wsl::windows::common::wslutil::DownloadFileImpl(
 [[nodiscard]] HANDLE wsl::windows::common::wslutil::DuplicateHandle(_In_ HANDLE Handle, _In_ std::optional<DWORD> DesiredAccess, _In_ BOOL InheritHandle)
 {
     HANDLE newHandle;
-    THROW_IF_WIN32_BOOL_FALSE(::DuplicateHandle(
-        GetCurrentProcess(), Handle, GetCurrentProcess(), &newHandle, DesiredAccess.value_or(0), InheritHandle, DesiredAccess.has_value() ? 0 : DUPLICATE_SAME_ACCESS));
+    THROW_IF_WIN32_BOOL_FALSE(
+        ::DuplicateHandle(
+            GetCurrentProcess(), Handle, GetCurrentProcess(), &newHandle, DesiredAccess.value_or(0), InheritHandle, DesiredAccess.has_value() ? 0 : DUPLICATE_SAME_ACCESS));
 
     return newHandle;
 }
@@ -406,8 +407,9 @@ std::wstring wsl::windows::common::wslutil::DownloadFileImpl(
     THROW_LAST_ERROR_IF(!caller);
 
     HANDLE newHandle;
-    THROW_IF_WIN32_BOOL_FALSE(::DuplicateHandle(
-        GetCurrentProcess(), Handle, caller.get(), &newHandle, DesiredAccess.value_or(0), FALSE, DesiredAccess.has_value() ? 0 : DUPLICATE_SAME_ACCESS));
+    THROW_IF_WIN32_BOOL_FALSE(
+        ::DuplicateHandle(
+            GetCurrentProcess(), Handle, caller.get(), &newHandle, DesiredAccess.value_or(0), FALSE, DesiredAccess.has_value() ? 0 : DUPLICATE_SAME_ACCESS));
 
     return newHandle;
 }
