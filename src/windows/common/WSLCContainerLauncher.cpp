@@ -95,13 +95,12 @@ void WSLCContainerLauncher::AddPort(uint16_t WindowsPort, uint16_t ContainerPort
     THROW_HR_IF(E_INVALIDARG, Family != AF_INET && Family != AF_INET6);
 
     auto& inserted = m_bindingAddressStorage.emplace_back(BindingAddress.value_or(Family == AF_INET ? "127.0.0.1" : "::1"));
-    m_ports.emplace_back(
-        WSLCPortMapping{
-            .HostPort = WindowsPort,
-            .ContainerPort = ContainerPort,
-            .Family = Family,
-            .Protocol = Protocol,
-            .BindingAddress = inserted.c_str()});
+    m_ports.emplace_back(WSLCPortMapping{
+        .HostPort = WindowsPort,
+        .ContainerPort = ContainerPort,
+        .Family = Family,
+        .Protocol = Protocol,
+        .BindingAddress = inserted.c_str()});
 }
 
 void WSLCContainerLauncher::SetName(std::string&& Name)

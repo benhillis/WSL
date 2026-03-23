@@ -73,8 +73,8 @@ wil::unique_handle wsl::windows::common::security::CreateRestrictedToken(_In_ HA
 
     // Get the thread token with appropriate access rights.
     wil::unique_handle newToken{};
-    THROW_IF_WIN32_BOOL_FALSE(
-        ::OpenThreadToken(::GetCurrentThread(), (TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY), TRUE, &newToken));
+    THROW_IF_WIN32_BOOL_FALSE(::OpenThreadToken(
+        ::GetCurrentThread(), (TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY), TRUE, &newToken));
 
     // Create a restricted token with only the SeChangeNotifyPrivilege privilege.
     wil::unique_handle restrictedToken{};
@@ -93,9 +93,8 @@ wil::unique_handle wsl::windows::common::security::CreateRestrictedToken(_In_ HA
     TOKEN_MANDATORY_LABEL tokenLabel{};
     tokenLabel.Label.Attributes = SE_GROUP_INTEGRITY;
     tokenLabel.Label.Sid = &sidBuffer.sid;
-    THROW_IF_WIN32_BOOL_FALSE(
-        ::SetTokenInformation(
-            restrictedToken.get(), TokenIntegrityLevel, &tokenLabel, (sizeof(tokenLabel) + ::GetLengthSid(&sidBuffer.sid))));
+    THROW_IF_WIN32_BOOL_FALSE(::SetTokenInformation(
+        restrictedToken.get(), TokenIntegrityLevel, &tokenLabel, (sizeof(tokenLabel) + ::GetLengthSid(&sidBuffer.sid))));
 
     return restrictedToken;
 }
@@ -172,9 +171,8 @@ wil::unique_handle wsl::windows::common::security::GetUserToken(_In_ TOKEN_TYPE 
     }
 
     wil::unique_handle newToken;
-    THROW_IF_WIN32_BOOL_FALSE(
-        ::DuplicateTokenEx(
-            contextToken.get(), TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, nullptr, SecurityImpersonation, tokenType, &newToken));
+    THROW_IF_WIN32_BOOL_FALSE(::DuplicateTokenEx(
+        contextToken.get(), TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, nullptr, SecurityImpersonation, tokenType, &newToken));
 
     return newToken;
 }

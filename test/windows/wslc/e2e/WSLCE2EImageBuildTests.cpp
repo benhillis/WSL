@@ -97,13 +97,12 @@ class WSLCE2EImageBuildTests
             "COPY hello.txt /hello.txt\n"
             "CMD [\"cat\", \"/hello.txt\"]\n");
 
-        auto buildResult = RunWslc(
-            std::format(
-                L"build \"{}\" -f \"{}\" -t {} -t {} --build-arg TEST_LABEL=wslc_e2e_test",
-                contextDir.wstring(),
-                dockerfilePath.wstring(),
-                BuiltImageTag1.NameAndTag(),
-                BuiltImageTag2.NameAndTag()));
+        auto buildResult = RunWslc(std::format(
+            L"build \"{}\" -f \"{}\" -t {} -t {} --build-arg TEST_LABEL=wslc_e2e_test",
+            contextDir.wstring(),
+            dockerfilePath.wstring(),
+            BuiltImageTag1.NameAndTag(),
+            BuiltImageTag2.NameAndTag()));
         buildResult.Verify({.Stderr = L"", .ExitCode = 0});
 
         // Verify both tags are present by inspecting each one

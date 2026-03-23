@@ -435,9 +435,8 @@ void WSLCContainerImpl::Attach(LPCSTR DetachKeys, ULONG* Stdin, ULONG* Stdout, U
     handles.emplace_back(
         std::make_unique<RelayHandle<ReadHandle>>(HandleWrapper{std::move(stdinRead), std::move(onInputComplete)}, ioHandle.get()));
 
-    handles.emplace_back(
-        std::make_unique<DockerIORelayHandle>(
-            std::move(ioHandle), std::move(stdoutWrite), std::move(stderrWrite), DockerIORelayHandle::Format::Raw));
+    handles.emplace_back(std::make_unique<DockerIORelayHandle>(
+        std::move(ioHandle), std::move(stdoutWrite), std::move(stderrWrite), DockerIORelayHandle::Format::Raw));
 
     m_ioRelay.AddHandles(std::move(handles));
 
@@ -1298,9 +1297,8 @@ std::unique_ptr<RelayedProcessIO> WSLCContainerImpl::CreateRelayedProcessIO(wil:
     fds.emplace(WSLCFDStdout, stdoutRead.release());
     fds.emplace(WSLCFDStderr, stderrRead.release());
 
-    ioHandles.emplace_back(
-        std::make_unique<DockerIORelayHandle>(
-            std::move(stream), std::move(stdoutWrite), std::move(stderrWrite), common::relay::DockerIORelayHandle::Format::Raw));
+    ioHandles.emplace_back(std::make_unique<DockerIORelayHandle>(
+        std::move(stream), std::move(stdoutWrite), std::move(stderrWrite), common::relay::DockerIORelayHandle::Format::Raw));
 
     m_ioRelay.AddHandles(std::move(ioHandles));
 

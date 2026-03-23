@@ -84,13 +84,11 @@ ProcessOutput WaitForProcessOutput(WslcProcess process, std::chrono::millisecond
     ProcessOutput output;
     wsl::windows::common::relay::MultiHandleWait io;
 
-    io.AddHandle(std::make_unique<wsl::windows::common::relay::ReadHandle>(std::move(ownedStdout), [&](const auto& buffer) {
-        output.stdoutOutput.append(buffer.data(), buffer.size());
-    }));
+    io.AddHandle(std::make_unique<wsl::windows::common::relay::ReadHandle>(
+        std::move(ownedStdout), [&](const auto& buffer) { output.stdoutOutput.append(buffer.data(), buffer.size()); }));
 
-    io.AddHandle(std::make_unique<wsl::windows::common::relay::ReadHandle>(std::move(ownedStderr), [&](const auto& buffer) {
-        output.stderrOutput.append(buffer.data(), buffer.size());
-    }));
+    io.AddHandle(std::make_unique<wsl::windows::common::relay::ReadHandle>(
+        std::move(ownedStderr), [&](const auto& buffer) { output.stderrOutput.append(buffer.data(), buffer.size()); }));
 
     auto timeoutTime = std::chrono::steady_clock::now() + timeout;
     io.Run(timeout);

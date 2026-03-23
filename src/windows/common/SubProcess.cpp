@@ -228,9 +228,8 @@ SubProcess::ProcessOutput SubProcess::RunAndCaptureOutput(DWORD Timeout, HANDLE 
     std::string stdoutNative;
     std::string stderrNative;
 
-    io.AddHandle(std::make_unique<relay::ReadHandle>(std::move(stdoutRead), [&](const gsl::span<char>& buffer) {
-        stdoutNative.append(buffer.data(), buffer.size());
-    }));
+    io.AddHandle(std::make_unique<relay::ReadHandle>(
+        std::move(stdoutRead), [&](const gsl::span<char>& buffer) { stdoutNative.append(buffer.data(), buffer.size()); }));
 
     wil::unique_hfile stderrWrite;
     if (StdErr == nullptr)
@@ -241,9 +240,8 @@ SubProcess::ProcessOutput SubProcess::RunAndCaptureOutput(DWORD Timeout, HANDLE 
 
         m_stdErr = stderrWrite.get();
 
-        io.AddHandle(std::make_unique<relay::ReadHandle>(std::move(stderrRead), [&](const gsl::span<char>& buffer) {
-            stderrNative.append(buffer.data(), buffer.size());
-        }));
+        io.AddHandle(std::make_unique<relay::ReadHandle>(
+            std::move(stderrRead), [&](const gsl::span<char>& buffer) { stderrNative.append(buffer.data(), buffer.size()); }));
     }
     else
     {

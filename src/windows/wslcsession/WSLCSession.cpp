@@ -293,17 +293,15 @@ void WSLCSession::StartDockerd()
     m_dockerdProcess = launcher.Launch(*m_virtualMachine);
 
     // Read stdout & stderr.
-    m_ioRelay.AddHandle(
-        std::make_unique<windows::common::relay::LineBasedReadHandle>(
-            m_dockerdProcess->GetStdHandle(1), [&](const auto& data) { OnDockerdLog(data); }, false));
+    m_ioRelay.AddHandle(std::make_unique<windows::common::relay::LineBasedReadHandle>(
+        m_dockerdProcess->GetStdHandle(1), [&](const auto& data) { OnDockerdLog(data); }, false));
 
-    m_ioRelay.AddHandle(
-        std::make_unique<windows::common::relay::LineBasedReadHandle>(
-            m_dockerdProcess->GetStdHandle(2), [&](const auto& data) { OnDockerdLog(data); }, false));
+    m_ioRelay.AddHandle(std::make_unique<windows::common::relay::LineBasedReadHandle>(
+        m_dockerdProcess->GetStdHandle(2), [&](const auto& data) { OnDockerdLog(data); }, false));
 
     // Monitor dockerd's exist so we can detect abnormal exits.
-    m_ioRelay.AddHandle(
-        std::make_unique<windows::common::relay::EventHandle>(m_dockerdProcess->GetExitEvent(), std::bind(&WSLCSession::OnDockerdExited, this)));
+    m_ioRelay.AddHandle(std::make_unique<windows::common::relay::EventHandle>(
+        m_dockerdProcess->GetExitEvent(), std::bind(&WSLCSession::OnDockerdExited, this)));
 }
 
 HRESULT WSLCSession::PullImage(LPCSTR ImageUri, const WslcRegistryAuthInformation* RegistryAuthenticationInformation, IProgressCallback* ProgressCallback)
@@ -356,9 +354,8 @@ try
 
     auto onCompleted = [&]() { io.Cancel(); };
 
-    io.AddHandle(
-        std::make_unique<DockerHTTPClient::DockerHttpResponseHandle>(
-            *requestContext, std::move(onHttpResponse), std::move(onChunk), std::move(onCompleted)));
+    io.AddHandle(std::make_unique<DockerHTTPClient::DockerHttpResponseHandle>(
+        *requestContext, std::move(onHttpResponse), std::move(onChunk), std::move(onCompleted)));
 
     io.Run({});
 
@@ -450,10 +447,9 @@ try
 
     if (dockerfileFileHandle)
     {
-        io.AddHandle(
-            std::make_unique<relay::RelayHandle<relay::ReadHandle>>(
-                common::relay::HandleWrapper{std::move(dockerfileFileHandle)},
-                common::relay::HandleWrapper{buildProcess.GetStdHandle(WSLCFDStdin)}));
+        io.AddHandle(std::make_unique<relay::RelayHandle<relay::ReadHandle>>(
+            common::relay::HandleWrapper{std::move(dockerfileFileHandle)},
+            common::relay::HandleWrapper{buildProcess.GetStdHandle(WSLCFDStdin)}));
     }
 
     bool verbose = Options->Verbose;
@@ -654,9 +650,8 @@ void WSLCSession::ImportImageImpl(DockerHTTPClient::HTTPRequestContext& Request,
         }
     };
 
-    io.AddHandle(
-        std::make_unique<relay::RelayHandle<relay::ReadHandle>>(
-            common::relay::HandleWrapper{std::move(imageFileHandle)}, common::relay::HandleWrapper{Request.stream.native_handle()}));
+    io.AddHandle(std::make_unique<relay::RelayHandle<relay::ReadHandle>>(
+        common::relay::HandleWrapper{std::move(imageFileHandle)}, common::relay::HandleWrapper{Request.stream.native_handle()}));
 
     io.AddHandle(
         std::make_unique<DockerHTTPClient::DockerHttpResponseHandle>(Request, std::move(onHttpResponse), std::move(onProgress)),
@@ -1077,15 +1072,14 @@ try
     try
     {
         std::lock_guard containersLock{m_containersLock};
-        auto& it = m_containers.emplace_back(
-            WSLCContainerImpl::Create(
-                *containerOptions,
-                *this,
-                m_virtualMachine.value(),
-                std::bind(&WSLCSession::OnContainerDeleted, this, std::placeholders::_1),
-                m_eventTracker.value(),
-                m_dockerClient.value(),
-                m_ioRelay));
+        auto& it = m_containers.emplace_back(WSLCContainerImpl::Create(
+            *containerOptions,
+            *this,
+            m_virtualMachine.value(),
+            std::bind(&WSLCSession::OnContainerDeleted, this, std::placeholders::_1),
+            m_eventTracker.value(),
+            m_dockerClient.value(),
+            m_ioRelay));
 
         it->CopyTo(Container);
 
@@ -1524,14 +1518,12 @@ MultiHandleWait WSLCSession::CreateIOContext(HANDLE CancelHandle)
     relay::MultiHandleWait io;
 
     // Cancel with E_ABORT if the session is terminating.
-    io.AddHandle(std::make_unique<relay::EventHandle>(m_sessionTerminatingEvent.get(), [this]() {
-        THROW_HR_MSG(E_ABORT, "Session %lu is terminating", m_id);
-    }));
+    io.AddHandle(std::make_unique<relay::EventHandle>(
+        m_sessionTerminatingEvent.get(), [this]() { THROW_HR_MSG(E_ABORT, "Session %lu is terminating", m_id); }));
 
     // Cancel with E_ABORT if the client process exits.
-    io.AddHandle(std::make_unique<relay::EventHandle>(wslutil::OpenCallingProcess(SYNCHRONIZE), [this]() {
-        THROW_HR_MSG(E_ABORT, "Client process has exited");
-    }));
+    io.AddHandle(std::make_unique<relay::EventHandle>(
+        wslutil::OpenCallingProcess(SYNCHRONIZE), [this]() { THROW_HR_MSG(E_ABORT, "Client process has exited"); }));
 
     if (CancelHandle != nullptr)
     {
