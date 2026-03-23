@@ -187,11 +187,9 @@ STDAPI WslcReleaseContainer(_In_ WslcContainer container);
 
 // GENERAL CONTAINER MANAGEMENT
 
-#ifndef WSLC_CONTAINER_ID_LENGTH
-#define WSLC_CONTAINER_ID_LENGTH 64
-#endif
+#define WSLC_CONTAINER_ID_BUFFER_SIZE 65 // 64 hex chars + null terminator
 
-STDAPI WslcGetContainerID(WslcContainer container, CHAR containerId[WSLC_CONTAINER_ID_LENGTH + 1]);
+STDAPI WslcGetContainerID(WslcContainer container, CHAR containerId[WSLC_CONTAINER_ID_BUFFER_SIZE]);
 
 STDAPI WslcGetContainerInitProcess(_In_ WslcContainer container, _Out_ WslcProcess* initProcess);
 

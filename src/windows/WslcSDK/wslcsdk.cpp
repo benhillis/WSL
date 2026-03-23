@@ -732,10 +732,10 @@ CATCH_RETURN();
 
 // GENERAL CONTAINER MANAGEMENT
 
-STDAPI WslcGetContainerID(WslcContainer container, CHAR containerId[WSLC_CONTAINER_ID_LENGTH + 1])
+STDAPI WslcGetContainerID(WslcContainer container, CHAR containerId[WSLC_CONTAINER_ID_BUFFER_SIZE])
 try
 {
-    static_assert(WSLC_CONTAINER_ID_LENGTH + 1 == sizeof(WSLCContainerId), "Container ID lengths differ.");
+    static_assert(WSLC_CONTAINER_ID_BUFFER_SIZE == sizeof(WSLCContainerId), "Container ID lengths differ.");
 
     auto internalType = CheckAndGetInternalType(container);
     RETURN_HR_IF_NULL(HRESULT_FROM_WIN32(ERROR_INVALID_STATE), internalType->container);

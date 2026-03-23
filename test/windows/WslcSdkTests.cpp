@@ -671,9 +671,9 @@ class WslcSdkTests
         VERIFY_SUCCEEDED(WslcCreateContainer(m_defaultSession, &containerSettings, &container, nullptr));
 
         // Positive: ID is returned and is the expected length of hex characters.
-        CHAR id[WSLC_CONTAINER_ID_LENGTH + 1]{};
+        CHAR id[WSLC_CONTAINER_ID_BUFFER_SIZE]{};
         VERIFY_SUCCEEDED(WslcGetContainerID(container.get(), id));
-        VERIFY_ARE_EQUAL(strnlen(id, WSLC_CONTAINER_ID_LENGTH + 1), static_cast<size_t>(WSLC_CONTAINER_ID_LENGTH));
+        VERIFY_ARE_EQUAL(strnlen(id, WSLC_CONTAINER_ID_BUFFER_SIZE), static_cast<size_t>(WSLC_CONTAINER_ID_BUFFER_SIZE - 1));
 
         // Negative: null ID buffer must fail.
         VERIFY_ARE_EQUAL(WslcGetContainerID(container.get(), nullptr), E_POINTER);
