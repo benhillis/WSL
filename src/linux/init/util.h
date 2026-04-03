@@ -224,6 +224,8 @@ std::optional<std::string> UtilGetEnv(const char* Name, char* Environment);
 
 std::string UtilGetEnvironmentVariable(const char* Name);
 
+std::string UtilGetWindowsEnvironmentVariable(const char* Name);
+
 int UtilGetFeatureFlags();
 
 void UtilSetFeatureFlags(int FeatureFlags, bool UpdateEnv = true);

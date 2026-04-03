@@ -53,6 +53,8 @@ LXT_VARIATION_HANDLER WslPathTestLxFromWinPath;
 
 LXT_VARIATION_HANDLER WslPathTestLxToWinPath;
 
+LXT_VARIATION_HANDLER WslPathTestEnvVarExpansion;
+
 static const LXT_VARIATION g_LxtVariations[] = {
     {"WslPath - Windows to DrvFs", WslPathTestDrvFsFromWinPath},
     {"WslPath - DrvFs to Windows", WslPathTestDrvFsToWinPath},
@@ -62,6 +64,7 @@ static const LXT_VARIATION g_LxtVariations[] = {
     {"WslPath - Linux to \\\\wsl.localhost", WslPathTestLxToWinPath},
     {"WslPath - \\\\wsl.localhost escaped characters", WslPathTestLxEscaped},
     {"WslPath - Invalid mountinfo line", WslPathTestInvalidMountInfo},
+    {"WslPath - Environment variable expansion", WslPathTestEnvVarExpansion},
 };
 
 int WslPathTestEntry(int Argc, char* Argv[])
@@ -411,6 +414,91 @@ Return Value:
     LxtCheckResult(LxtCheckWslPathTranslation("/root", WSLPATH_DISTRO_PREFIX "\\root", false));
     LxtCheckResult(LxtCheckWslPathTranslation("/proc/stat", WSLPATH_DISTRO_PREFIX "\\proc\\stat", false));
     LxtCheckResult(LxtCheckWslPathTranslation("/proc/1/", WSLPATH_DISTRO_PREFIX "\\proc\\1\\", false));
+
+ErrorExit:
+    return Result;
+}
+
+int WslPathTestEnvVarExpansion(PLXT_ARGS Args)
+
+/*++
+
+Description:
+
+    This routine tests wslpath's Windows environment variable expansion.
+
+Arguments:
+
+    Args - Supplies the command line arguments.
+
+Return Value:
+
+    Returns 0 on success, -1 on failure.
+
+--*/
+
+{
+
+    int Result;
+    char TranslatedPath[4096];
+    size_t Len;
+    char* SystemDriveArgv[] = {"/bin/wslpath", "%SYSTEMDRIVE%\\", NULL};
+    char* SystemDriveWinArgv[] = {"/bin/wslpath", "-w", "%SYSTEMDRIVE%\\", NULL};
+    char* SystemDriveMixedArgv[] = {"/bin/wslpath", "-m", "%SYSTEMDRIVE%\\", NULL};
+
+    //
+    // Test expanding %SYSTEMDRIVE% with -u mode (default). SYSTEMDRIVE is
+    // typically "C:", so the result should be the DrvFs mount point.
+    //
+
+    LxtCheckResult(LxtExecuteAndReadOutput(SystemDriveArgv, TranslatedPath, sizeof(TranslatedPath)));
+    Len = strlen(TranslatedPath);
+    if (Len > 0 && TranslatedPath[Len - 1] == '\n')
+    {
+        TranslatedPath[Len - 1] = '\0';
+    }
+
+    LxtLogInfo("%%SYSTEMDRIVE%%\\ => %s", TranslatedPath);
+    LxtCheckEqual(strncmp(TranslatedPath, "/mnt/", 5), 0);
+
+    //
+    // Test expanding %SYSTEMDRIVE% with -w mode. The result should be the
+    // expanded Windows path (e.g. "C:\").
+    //
+
+    LxtCheckResult(LxtExecuteAndReadOutput(SystemDriveWinArgv, TranslatedPath, sizeof(TranslatedPath)));
+    Len = strlen(TranslatedPath);
+    if (Len > 0 && TranslatedPath[Len - 1] == '\n')
+    {
+        TranslatedPath[Len - 1] = '\0';
+    }
+
+    LxtLogInfo("-w %%SYSTEMDRIVE%%\\ => %s", TranslatedPath);
+    LxtCheckEqual(strlen(TranslatedPath) >= 2, true);
+    LxtCheckEqual(TranslatedPath[1], ':');
+
+    //
+    // Test expanding %SYSTEMDRIVE% with -m mode. The result should use
+    // forward slashes (e.g. "C:/").
+    //
+
+    LxtCheckResult(LxtExecuteAndReadOutput(SystemDriveMixedArgv, TranslatedPath, sizeof(TranslatedPath)));
+    Len = strlen(TranslatedPath);
+    if (Len > 0 && TranslatedPath[Len - 1] == '\n')
+    {
+        TranslatedPath[Len - 1] = '\0';
+    }
+
+    LxtLogInfo("-m %%SYSTEMDRIVE%%\\ => %s", TranslatedPath);
+    LxtCheckEqual(strlen(TranslatedPath) >= 2, true);
+    LxtCheckEqual(TranslatedPath[1], ':');
+    LxtCheckEqual(strchr(TranslatedPath, '\\') == NULL, true);
+
+    //
+    // Verify that paths without environment variables still work normally.
+    //
+
+    LxtCheckResult(LxtCheckWslPathTranslation("C:\\", "/mnt/c/", true));
 
 ErrorExit:
     return Result;

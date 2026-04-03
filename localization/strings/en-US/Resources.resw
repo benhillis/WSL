@@ -348,12 +348,17 @@ Please enable the "Windows Subsystem for Linux" optional component to use WSL1.<
     -m
         Translate from a WSL path to a Windows path, with '/' instead of '\\'
 
-Example: wslpath 'c:\\users'</value>
+Windows environment variables (%VAR%) in the path are automatically expanded.
+
+Examples:
+    wslpath 'c:\\users'
+    wslpath '%USERPROFILE%\\Documents'
+    wslpath '%LOCALAPPDATA%'</value>
     <comment>{Locked="-a
 "}{Locked="-u
 "}{Locked="-w
 "}{Locked="-m
-"}Command line arguments and file names should not be translated</comment>
+"}{Locked="%VAR%"}{Locked="%USERPROFILE%"}{Locked="%LOCALAPPDATA%"}Command line arguments and file names should not be translated</comment>
   </data>
   <data name="MessageWslconfigUsage" xml:space="preserve">
     <value>Performs administrative operations on Windows Subsystem for Linux

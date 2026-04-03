@@ -700,15 +700,22 @@ typedef struct _LX_INIT_CREATE_LOGIN_SESSION
 // The buffer of the query environment variable struct contains the name of the variable
 // to query for. On response, it will contain the value of the environment variable.
 //
+// Flags:
+//   LX_INIT_QUERY_ENV_FLAG_WINDOWS - Query the Windows host environment rather
+//       than the Linux process environment.
+//
+
+#define LX_INIT_QUERY_ENV_FLAG_WINDOWS 0x1
 
 typedef struct _LX_INIT_QUERY_ENVIRONMENT_VARIABLE
 {
     static inline auto Type = LxInitMessageQueryEnvironmentVariable;
 
     MESSAGE_HEADER Header;
+    unsigned int Flags;
     char Buffer[];
 
-    PRETTY_PRINT(FIELD(Header), FIELD(Buffer));
+    PRETTY_PRINT(FIELD(Header), FIELD(Flags), FIELD(Buffer));
 } LX_INIT_QUERY_ENVIRONMENT_VARIABLE, *PLX_INIT_QUERY_ENVIRONMENT_VARIABLE;
 
 typedef struct _LX_GNS_RESULT

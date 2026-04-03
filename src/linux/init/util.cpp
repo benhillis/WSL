@@ -1136,6 +1136,47 @@ catch (...)
     return {};
 }
 
+std::string UtilGetWindowsEnvironmentVariable(const char* Name)
+
+/*++
+
+Routine Description:
+
+    This queries a Windows environment variable by sending a request to the
+    Windows relay process via init's interop channel.
+
+Arguments:
+
+    Name - Supplies the variable name to query.
+
+Return Value:
+
+    The value of the specified variable, or an empty string if not found.
+
+--*/
+
+try
+{
+    wsl::shared::SocketChannel channel{UtilConnectToInteropServer(), "InteropClient"};
+    if (channel.Socket() < 0)
+    {
+        return {};
+    }
+
+    wsl::shared::MessageWriter<LX_INIT_QUERY_ENVIRONMENT_VARIABLE> Message(LxInitMessageQueryEnvironmentVariable);
+    Message->Flags = LX_INIT_QUERY_ENV_FLAG_WINDOWS;
+    Message.WriteString(Name);
+
+    channel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Message.Span());
+
+    return channel.ReceiveMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>().Buffer;
+}
+catch (...)
+{
+    LOG_CAUGHT_EXCEPTION();
+    return {};
+}
+
 int UtilGetFeatureFlags()
 
 /*++

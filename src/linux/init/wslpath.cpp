@@ -31,6 +31,8 @@ using namespace wsl::shared;
 
 #define INVALID_USAGE() Die(Argv[0], EINVAL, true, NULL)
 
+std::string ExpandWindowsEnvironmentVariables(const char* Path);
+
 std::string AbsolutePath(char* Path, char* Cwd, size_t CwdSize, bool* Relative);
 
 std::string AbsoluteWindowsPath(char* RelativePath, const char* Cwd);
@@ -404,6 +406,105 @@ Return Value:
     return std::string(SuffixString);
 }
 
+std::string ExpandWindowsEnvironmentVariables(const char* Path)
+
+/*++
+
+Routine Description:
+
+    This routine expands Windows-style environment variable references (%VAR%)
+    in the given path string. Each %VAR% is resolved by querying the Windows
+    environment block stored by init via UtilGetEnvironmentVariable.
+
+    A literal percent can be represented as %% which expands to a single %.
+    If a variable cannot be resolved, the %VAR% reference is left as-is.
+
+Arguments:
+
+    Path - Supplies the path string that may contain %VAR% references.
+
+Return Value:
+
+    The expanded path string if any variables were found, or an empty string
+    if no expansion was needed.
+
+--*/
+
+try
+{
+    std::string Result{};
+    const char* Current = Path;
+    bool FoundVariable = false;
+
+    while (*Current != '\0')
+    {
+        if (*Current != '%')
+        {
+            Result += *Current;
+            Current++;
+            continue;
+        }
+
+        //
+        // Found a '%'. Look for the closing '%'.
+        //
+
+        const char* VarStart = Current + 1;
+        const char* VarEnd = strchr(VarStart, '%');
+        if (VarEnd == nullptr)
+        {
+            //
+            // No closing '%', copy the rest of the string as-is.
+            //
+
+            Result += Current;
+            break;
+        }
+
+        if (VarEnd == VarStart)
+        {
+            //
+            // %% expands to a literal %.
+            //
+
+            Result += '%';
+            Current = VarEnd + 1;
+            continue;
+        }
+
+        //
+        // Extract the variable name and query the Windows environment.
+        //
+
+        std::string VarName(VarStart, VarEnd - VarStart);
+        auto Value = UtilGetWindowsEnvironmentVariable(VarName.c_str());
+        if (!Value.empty())
+        {
+            Result += Value;
+            FoundVariable = true;
+        }
+        else
+        {
+            //
+            // Variable not found; preserve the original %VAR% text.
+            //
+
+            Result += '%';
+            Result += VarName;
+            Result += '%';
+        }
+
+        Current = VarEnd + 1;
+    }
+
+    return FoundVariable ? Result : std::string{};
+}
+catch (...)
+{
+    LOG_CAUGHT_EXCEPTION();
+    return {};
+}
+
 int WslPathEntry(int Argc, char* Argv[])
 
 /*++
@@ -523,6 +624,7 @@ Return Value:
 {
     bool Absolute;
     std::string CanonicalPath{};
+    std::string ExpandedPath{};
     char* OutputCwd = nullptr;
     size_t OutputCwdLength;
     char* RealPath = nullptr;
@@ -555,6 +657,37 @@ Return Value:
 
     default:
         goto WslPathTranslateExit;
+    }
+
+    //
+    // Expand any Windows environment variable references (%VAR%) in the path.
+    // If expansion occurs, the result is a Windows-format path.
+    //
+
+    ExpandedPath = ExpandWindowsEnvironmentVariables(Path);
+    if (!ExpandedPath.empty())
+    {
+        if (Mode != TRANSLATE_MODE_UNIX)
+        {
+            //
+            // The expanded result is already a Windows path. For -m mode,
+            // convert backslashes to forward slashes.
+            //
+
+            if (Mode == TRANSLATE_MODE_MIXED)
+            {
+                UtilCanonicalisePathSeparator(ExpandedPath, PATH_SEP);
+            }
+
+            return ExpandedPath;
+        }
+
+        //
+        // For -u mode, use the expanded Windows path as input for
+        // Windows-to-Linux translation.
+        //
+
+        Path = ExpandedPath.data();
     }
 
     //

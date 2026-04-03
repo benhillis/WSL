@@ -394,9 +394,37 @@ try
             return;
         }
 
-        auto Value = UtilGetEnvironmentVariable(Query->Buffer);
+        if (WI_IsFlagSet(Query->Flags, LX_INIT_QUERY_ENV_FLAG_WINDOWS))
+        {
+            //
+            // Forward the query to the Windows relay process via the interop
+            // channel and relay the response back to the caller.
+            //
+
+            if (InteropChannel.Socket() > 0)
+            {
+                InteropChannel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Message);
+                gsl::span<gsl::byte> ResponseSpan;
+                InteropChannel.ReceiveMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(&ResponseSpan);
+                ResponseChannel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(ResponseSpan);
+                break;
+            }
+
+            //
+            // No interop channel available, return empty.
+            //
+        }
+        else
+        {
+            auto Value = UtilGetEnvironmentVariable(Query->Buffer);
+            wsl::shared::MessageWriter<LX_INIT_QUERY_ENVIRONMENT_VARIABLE> Response(LxInitMessageQueryEnvironmentVariable);
+            Response.WriteString(Value);
+            ResponseChannel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Response.Span());
+            break;
+        }
+
         wsl::shared::MessageWriter<LX_INIT_QUERY_ENVIRONMENT_VARIABLE> Response(LxInitMessageQueryEnvironmentVariable);
-        Response.WriteString(Value);
+        Response.WriteString("");
         ResponseChannel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Response.Span());
     }
 
