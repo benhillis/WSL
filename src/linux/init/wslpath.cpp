@@ -414,7 +414,7 @@ Routine Description:
 
     This routine expands Windows-style environment variable references (%VAR%)
     in the given path string. Each %VAR% is resolved by querying the Windows
-    environment block stored by init via UtilGetEnvironmentVariable.
+    environment block cached in the relay process via UtilGetWindowsEnvironmentVariable.
 
     A literal percent can be represented as %% which expands to a single %.
     If a variable cannot be resolved, the %VAR% reference is left as-is.

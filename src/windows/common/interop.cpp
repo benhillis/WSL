@@ -609,35 +609,6 @@ wsl::windows::common::interop::VmModeWorkerThread(_In_ wsl::shared::SocketChanne
             CreateProcessVmMode(VmId, Span);
             break;
 
-        case LxInitMessageQueryEnvironmentVariable:
-        {
-            const auto* Query = gslhelpers::try_get_struct<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Span);
-            THROW_HR_IF(E_INVALIDARG, !Query);
-
-            const auto Name = wsl::shared::string::MultiByteToWide(Query->Buffer);
-            std::wstring Value(MAX_PATH, L'\0');
-            auto Length = GetEnvironmentVariableW(Name.c_str(), Value.data(), static_cast<DWORD>(Value.size()));
-            if (Length > Value.size())
-            {
-                Value.resize(Length);
-                Length = GetEnvironmentVariableW(Name.c_str(), Value.data(), static_cast<DWORD>(Value.size()));
-            }
-
-            wsl::shared::MessageWriter<LX_INIT_QUERY_ENVIRONMENT_VARIABLE> Response(LxInitMessageQueryEnvironmentVariable);
-            if (Length > 0)
-            {
-                Value.resize(Length);
-                Response.WriteString(wsl::shared::string::WideToMultiByte(Value));
-            }
-            else
-            {
-                Response.WriteString("");
-            }
-
-            Channel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Response.Span());
-            break;
-        }
-
         default:
             THROW_HR_MSG(E_UNEXPECTED, "Unexpected message %d", Message->MessageType);
         }

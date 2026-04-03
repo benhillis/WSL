@@ -1142,8 +1142,9 @@ std::string UtilGetWindowsEnvironmentVariable(const char* Name)
 
 Routine Description:
 
-    This queries a Windows environment variable by sending a request to the
-    Windows relay process via init's interop channel.
+    This queries a Windows environment variable from the NtEnvironment block
+    stored in the relay process. The request is sent to the relay via init's
+    interop socket using LX_INIT_QUERY_ENV_FLAG_WINDOWS.
 
 Arguments:
 

@@ -243,10 +243,63 @@ int g_ElevatedMountNamespace = -1;
 int g_NonElevatedMountNamespace = -1;
 
 //
+// Windows environment variables parsed from the NtEnvironment block of the
+// CreateProcess message. Populated by the relay process so child processes
+// can query Windows environment variables without an IPC call to the host.
+//
+
+std::map<std::string, std::string, wsl::shared::string::CaseInsensitiveCompare> g_WindowsEnvironment;
+
+//
 // Boot state bookkeeping.
 //
 
 extern wsl::shared::SocketChannel g_plan9ControlChannel;
+
+void ConfigSetWindowsEnvironment(const PLX_INIT_CREATE_PROCESS_COMMON Common, gsl::span<gsl::byte> Buffer)
+
+/*++
+
+Routine Description:
+
+    This routine parses the NtEnvironment block from a create process message
+    and stores the key-value pairs in g_WindowsEnvironment. This is called by
+    the relay process after fork so that child processes can look up Windows
+    environment variables locally.
+
+Arguments:
+
+    Common - Supplies a pointer to the common create process message data.
+
+    Buffer - Supplies the span containing the common create process data.
+
+Return Value:
+
+    None.
+
+--*/
+
+try
+{
+    auto* EnvBuffer = reinterpret_cast<const char*>(Buffer.data()) + Common->NtEnvironmentOffset;
+    for (unsigned short Index = 0; Index < Common->NtEnvironmentCount; Index++)
+    {
+        auto Length = strlen(EnvBuffer);
+        if (Length == 0)
+        {
+            break;
+        }
+
+        auto* Divider = strchr(EnvBuffer, '=');
+        if (Divider != nullptr)
+        {
+            g_WindowsEnvironment.emplace(std::string(EnvBuffer, Divider - EnvBuffer), std::string(Divider + 1));
+        }
+
+        EnvBuffer += Length + 1;
+    }
+}
+CATCH_LOG()
 
 void ConfigAppendNtPath(EnvironmentBlock& Environment, char* NtPath)
 
@@ -394,37 +447,22 @@ try
             return;
         }
 
+        std::string Value;
         if (WI_IsFlagSet(Query->Flags, LX_INIT_QUERY_ENV_FLAG_WINDOWS))
         {
-            //
-            // Forward the query to the Windows relay process via the interop
-            // channel and relay the response back to the caller.
-            //
-
-            if (InteropChannel.Socket() > 0)
+            auto It = g_WindowsEnvironment.find(Query->Buffer);
+            if (It != g_WindowsEnvironment.end())
             {
-                InteropChannel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Message);
-                gsl::span<gsl::byte> ResponseSpan;
-                InteropChannel.ReceiveMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(&ResponseSpan);
-                ResponseChannel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(ResponseSpan);
-                break;
+                Value = It->second;
             }
-
-            //
-            // No interop channel available, return empty.
-            //
         }
         else
         {
-            auto Value = UtilGetEnvironmentVariable(Query->Buffer);
-            wsl::shared::MessageWriter<LX_INIT_QUERY_ENVIRONMENT_VARIABLE> Response(LxInitMessageQueryEnvironmentVariable);
-            Response.WriteString(Value);
-            ResponseChannel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Response.Span());
-            break;
+            Value = UtilGetEnvironmentVariable(Query->Buffer);
         }
 
         wsl::shared::MessageWriter<LX_INIT_QUERY_ENVIRONMENT_VARIABLE> Response(LxInitMessageQueryEnvironmentVariable);
-        Response.WriteString("");
+        Response.WriteString(Value);
         ResponseChannel.SendMessage<LX_INIT_QUERY_ENVIRONMENT_VARIABLE>(Response.Span());
     }
 

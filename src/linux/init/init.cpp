@@ -1668,6 +1668,15 @@ Return Value:
 
     ChildPid = Result;
 
+    //
+    // Store the Windows environment block from the create process message so
+    // that child processes can query Windows environment variables (e.g. via
+    // wslpath) without an IPC call to the Windows host.
+    //
+
+    ConfigSetWindowsEnvironment(
+        &CreateProcess.Common, Span.subspan(offsetof(LX_INIT_CREATE_PROCESS_UTILITY_VM, Common)));
+
     if (Sockets.size() >= 6)
     {
         Sockets[5].reset();

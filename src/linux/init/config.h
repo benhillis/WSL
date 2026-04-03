@@ -406,6 +406,8 @@ void ConfigHandleInteropMessage(
     const MESSAGE_HEADER* Header,
     const wsl::linux::WslDistributionConfig& Config);
 
+void ConfigSetWindowsEnvironment(const PLX_INIT_CREATE_PROCESS_COMMON Common, gsl::span<gsl::byte> Buffer);
+
 void ConfigInitializeCgroups(wsl::linux::WslDistributionConfig& Config);
 
 int ConfigInitializeInstance(wsl::shared::SocketChannel& Channel, gsl::span<gsl::byte> Buffer, wsl::linux::WslDistributionConfig& Config);
