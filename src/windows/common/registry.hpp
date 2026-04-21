@@ -35,8 +35,6 @@ std::map<std::wstring, wil::unique_hkey> EnumKeys(_In_ HKEY Key, _In_ DWORD Subk
 
 std::vector<std::pair<std::wstring, DWORD>> EnumValues(_In_ HKEY Key);
 
-DWORD GetMachinePolicyValue(_In_ LPCWSTR Name, HKEY lxssKey);
-
 bool IsKeyVolatile(_In_ HKEY Key);
 
 wil::unique_hkey OpenCurrentUser(_In_ REGSAM AccessMask = (KEY_READ | KEY_WRITE));
@@ -50,8 +48,6 @@ wil::unique_hkey OpenLxssMachineKey(REGSAM AccessMask = KEY_READ);
 wil::unique_hkey OpenLxssUserKey();
 
 wil::unique_hkey OpenOrCreateLxssDiskMountsKey(_In_ PSID UserSid);
-
-void QueryInfo(_In_ HKEY Key, _In_opt_ DWORD* MaxSubKeySize = nullptr, _In_opt_ DWORD* MaxValueNameSize = nullptr, _In_opt_ DWORD* MaxValueDataSize = nullptr);
 
 DWORD
 ReadDword(_In_ HKEY Key, _In_opt_ LPCWSTR KeyName, _In_opt_ LPCWSTR ValueName, _In_ DWORD DefaultValue);

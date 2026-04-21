@@ -58,19 +58,18 @@ std::wstring GetKeyPath(_In_ HKEY Key)
     return std::wstring{info->Name, info->NameLength / sizeof(WCHAR)};
 }
 
-void ReportErrorIfFailed(_In_ LSTATUS Error, _In_ HKEY Key, _In_opt_ LPCWSTR Subkey, _In_opt_ LPCWSTR Value)
+void ReportHrErrorIfFailed(_In_ HRESULT hr, _In_ HKEY Key, _In_opt_ LPCWSTR Subkey, _In_opt_ LPCWSTR Value)
 {
-    if (Error == ERROR_SUCCESS)
+    if (SUCCEEDED(hr))
     {
         return;
     }
 
-    const auto result = HRESULT_FROM_WIN32(Error);
     if (Key == nullptr)
     {
-        const auto errorString = wsl::windows::common::wslutil::GetSystemErrorString(result);
+        const auto errorString = wsl::windows::common::wslutil::GetSystemErrorString(hr);
         THROW_HR_WITH_USER_ERROR(
-            result, wsl::shared::Localization::MessageRegistryError(Subkey ? Subkey : L"[null]", errorString.c_str()).c_str());
+            hr, wsl::shared::Localization::MessageRegistryError(Subkey ? Subkey : L"[null]", errorString.c_str()).c_str());
     }
 
     auto path = GetKeyPath(Key);
@@ -86,13 +85,23 @@ void ReportErrorIfFailed(_In_ LSTATUS Error, _In_ HKEY Key, _In_opt_ LPCWSTR Sub
 
     if (wsl::windows::common::ExecutionContext::ShouldCollectErrorMessage())
     {
-        const auto errorString = wsl::windows::common::wslutil::GetSystemErrorString(result);
-        THROW_HR_WITH_USER_ERROR(result, wsl::shared::Localization::MessageRegistryError(path.c_str(), errorString.c_str()).c_str());
+        const auto errorString = wsl::windows::common::wslutil::GetSystemErrorString(hr);
+        THROW_HR_WITH_USER_ERROR(hr, wsl::shared::Localization::MessageRegistryError(path.c_str(), errorString.c_str()).c_str());
     }
     else
     {
-        THROW_HR_MSG(result, "An error occurred accessing the registry. Path: %ls", path.c_str());
+        THROW_HR_MSG(hr, "An error occurred accessing the registry. Path: %ls", path.c_str());
     }
+}
+
+void ReportErrorIfFailed(_In_ LSTATUS Error, _In_ HKEY Key, _In_opt_ LPCWSTR Subkey, _In_opt_ LPCWSTR Value)
+{
+    if (Error == ERROR_SUCCESS)
+    {
+        return;
+    }
+
+    ReportHrErrorIfFailed(HRESULT_FROM_WIN32(Error), Key, Subkey, Value);
 }
 } // namespace
 void wsl::windows::common::registry::ClearSubkeys(_In_ HKEY Key)
@@ -143,27 +152,11 @@ void wsl::windows::common::registry::DeleteValue(_In_ HKEY Key, _In_ LPCWSTR Key
 
 std::map<std::wstring, wil::unique_hkey> wsl::windows::common::registry::EnumKeys(_In_ HKEY Key, _In_ DWORD SubkeyAccess)
 {
-    // Get the max size of a subkey
-    DWORD MaxSubkeySize = 0;
-    QueryInfo(Key, &MaxSubkeySize);
-
     std::map<std::wstring, wil::unique_hkey> keys;
-    for (DWORD Index = 0;; Index++)
+    for (const auto& keyData : wil::make_range(wil::reg::key_iterator{Key}, wil::reg::key_iterator{}))
     {
-        std::wstring Name(MaxSubkeySize, '\0');
-        DWORD NameSize = MaxSubkeySize + 1;
-        const LSTATUS result = RegEnumKeyExW(Key, Index, Name.data(), &NameSize, nullptr, nullptr, nullptr, nullptr);
-        if (result == ERROR_NO_MORE_ITEMS)
-        {
-            break;
-        }
-
-        ReportErrorIfFailed(result, Key, nullptr, nullptr);
-
-        Name.resize(NameSize);
-
-        auto subKey = OpenKey(Key, Name.c_str(), SubkeyAccess);
-        keys.emplace(std::move(Name), std::move(subKey));
+        auto subKey = OpenKey(Key, keyData.name.c_str(), SubkeyAccess);
+        keys.emplace(keyData.name, std::move(subKey));
     }
 
     return keys;
@@ -171,34 +164,17 @@ std::map<std::wstring, wil::unique_hkey> wsl::windows::common::registry::EnumKey
 
 std::vector<std::pair<GUID, std::wstring>> wsl::windows::common::registry::EnumGuidKeys(_In_ HKEY Key)
 {
-    // Iterate through the provided keys and return a list of all sub-keys that are GUIDs.
-    WCHAR buffer[39];
     std::vector<std::pair<GUID, std::wstring>> subKeys;
-    DWORD index = 0;
-    for (;;)
+    for (const auto& keyData : wil::make_range(wil::reg::key_iterator{Key}, wil::reg::key_iterator{}))
     {
-        DWORD bufferSize = ARRAYSIZE(buffer);
-        const LSTATUS error = RegEnumKeyExW(Key, index, buffer, &bufferSize, nullptr, nullptr, nullptr, nullptr);
-        index += 1;
-        if (error == ERROR_NO_MORE_ITEMS)
-        {
-            break;
-        }
-        if ((error == ERROR_MORE_DATA) || ((error == ERROR_SUCCESS) && (bufferSize != (ARRAYSIZE(buffer) - 1))))
-        {
-            continue;
-        }
-
-        ReportErrorIfFailed(error, Key, nullptr, nullptr);
-
         // Ignore any subkeys that are not GUIDs.
-        auto guid = wsl::shared::string::ToGuid(buffer);
+        auto guid = wsl::shared::string::ToGuid(keyData.name.c_str());
         if (!guid.has_value())
         {
             continue;
         }
 
-        subKeys.emplace_back(std::make_pair(guid.value(), std::wstring(buffer)));
+        subKeys.emplace_back(std::make_pair(guid.value(), keyData.name));
     }
 
     return subKeys;
@@ -207,24 +183,9 @@ std::vector<std::pair<GUID, std::wstring>> wsl::windows::common::registry::EnumG
 std::vector<std::pair<std::wstring, DWORD>> wsl::windows::common::registry::EnumValues(_In_ HKEY Key)
 {
     std::vector<std::pair<std::wstring, DWORD>> values;
-    DWORD maxValueNameSize = 0;
-    QueryInfo(Key, nullptr, &maxValueNameSize);
-
-    for (DWORD Index = 0;; Index++)
+    for (const auto& valueData : wil::make_range(wil::reg::value_iterator{Key}, wil::reg::value_iterator{}))
     {
-        std::wstring valueName(maxValueNameSize, '\0');
-        DWORD size = maxValueNameSize + 1;
-        DWORD type = 0;
-
-        const auto error = RegEnumValueW(Key, Index, valueName.data(), &size, nullptr, &type, nullptr, nullptr);
-        if (error == ERROR_NO_MORE_ITEMS)
-        {
-            break;
-        }
-        THROW_IF_WIN32_ERROR(error);
-
-        valueName.resize(size);
-        values.emplace_back(std::move(valueName), type);
+        values.emplace_back(valueData.name, valueData.type);
     }
 
     return values;
@@ -258,7 +219,7 @@ std::pair<wil::unique_hkey, HRESULT> wsl::windows::common::registry::OpenKeyNoTh
 wil::unique_hkey wsl::windows::common::registry::OpenKey(_In_ HKEY Key, _In_ LPCWSTR SubKey, _In_ REGSAM AccessMask, _In_ DWORD Options)
 {
     auto [key, error] = OpenKeyNoThrow(Key, SubKey, AccessMask, Options);
-    ReportErrorIfFailed(error, Key, SubKey, nullptr);
+    ReportHrErrorIfFailed(error, Key, SubKey, nullptr);
 
     return std::move(key);
 }
@@ -293,43 +254,32 @@ wil::unique_hkey wsl::windows::common::registry::OpenOrCreateLxssDiskMountsKey(_
     return CreateKey(HKEY_LOCAL_MACHINE, path.c_str(), KEY_ALL_ACCESS, nullptr, REG_OPTION_VOLATILE);
 }
 
-void wsl::windows::common::registry::QueryInfo(_In_ HKEY Key, _In_opt_ DWORD* MaxSubKeySize, _In_opt_ DWORD* MaxValueNameSize, _In_opt_ DWORD* MaxValueDataSize)
-{
-    const auto error = (RegQueryInfoKeyW(
-        Key, nullptr, nullptr, nullptr, nullptr, MaxSubKeySize, nullptr, nullptr, MaxValueNameSize, MaxValueDataSize, nullptr, nullptr));
-
-    ReportErrorIfFailed(error, Key, nullptr, nullptr);
-}
-
 DWORD
 wsl::windows::common::registry::ReadDword(_In_ HKEY Key, _In_opt_ LPCWSTR KeyName, _In_opt_ LPCWSTR ValueName, _In_ DWORD DefaultValue)
 {
-    DWORD Returned = 0;
-    DWORD Size = sizeof(Returned);
-    const LONG Result = RegGetValueW(Key, KeyName, ValueName, RRF_RT_REG_DWORD, nullptr, &Returned, &Size);
-    if ((Result == ERROR_PATH_NOT_FOUND) || (Result == ERROR_FILE_NOT_FOUND))
+    DWORD value{};
+    const auto hr = wil::reg::get_value_dword_nothrow(Key, KeyName, ValueName, &value);
+    if (hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
     {
         return DefaultValue;
     }
 
-    ReportErrorIfFailed(Result, Key, KeyName, ValueName);
-    return Returned;
+    ReportHrErrorIfFailed(hr, Key, KeyName, ValueName);
+    return value;
 }
 
 ULONG64
 wsl::windows::common::registry::ReadQword(_In_ HKEY Key, _In_opt_ LPCWSTR KeyName, _In_opt_ LPCWSTR ValueName, _In_ ULONG64 DefaultValue)
 {
-    ULONG64 Returned = 0;
-    DWORD Size = sizeof(Returned);
-    const LONG Result = RegGetValueW(Key, KeyName, ValueName, RRF_RT_REG_QWORD, nullptr, &Returned, &Size);
-    if ((Result == ERROR_PATH_NOT_FOUND) || (Result == ERROR_FILE_NOT_FOUND))
+    uint64_t value{};
+    const auto hr = wil::reg::get_value_qword_nothrow(Key, KeyName, ValueName, &value);
+    if (hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
     {
         return DefaultValue;
     }
 
-    ReportErrorIfFailed(Result, Key, KeyName, ValueName);
-
-    return Returned;
+    ReportHrErrorIfFailed(hr, Key, KeyName, ValueName);
+    return value;
 }
 
 std::wstring wsl::windows::common::registry::ReadString(_In_ HKEY Key, _In_opt_ LPCWSTR KeyName, _In_opt_ LPCWSTR ValueName, _In_opt_ LPCWSTR Default)
@@ -352,148 +302,68 @@ std::wstring wsl::windows::common::registry::ReadString(_In_ HKEY Key, _In_opt_ 
 
 std::optional<std::wstring> wsl::windows::common::registry::ReadOptionalString(_In_ HKEY Key, _In_opt_ LPCWSTR KeyName, _In_opt_ LPCWSTR ValueName)
 {
-    DWORD Size = 0;
-    LONG Result = RegGetValueW(Key, KeyName, ValueName, (RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ), nullptr, nullptr, &Size);
-    if ((Result == ERROR_PATH_NOT_FOUND) || (Result == ERROR_FILE_NOT_FOUND) || (Size == 0))
-    {
-        return {};
-    }
-
-    ReportErrorIfFailed(Result, Key, KeyName, ValueName);
-
-    //
-    // Allocate a buffer and read the value of the key.
-    //
-
-    std::wstring Buffer(Size / sizeof(WCHAR), L'\0');
-    Result = RegGetValueW(Key, KeyName, ValueName, (RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ), nullptr, Buffer.data(), &Size);
-    if ((Result == ERROR_PATH_NOT_FOUND) || (Result == ERROR_FILE_NOT_FOUND) || (Size == 0))
-    {
-        return {};
-    }
-
-    ReportErrorIfFailed(Result, Key, KeyName, ValueName);
-
-    Buffer.resize(wcsnlen(Buffer.c_str(), Buffer.size()));
-    return Buffer;
+    return wil::reg::try_get_value_string(Key, KeyName, ValueName);
 }
 
 std::vector<std::string> wsl::windows::common::registry::ReadStringSet(
     _In_ HKEY Key, _In_opt_ LPCWSTR KeyName, _In_opt_ LPCWSTR ValueName, const std::vector<std::string>& Default)
 {
-    //
-    // Detect if the key exists and determine how large of a buffer is needed.
-    // If the key does not exist, return the default value.
-    //
-
-    LONG Result;
-    DWORD Size = 0;
-    Result = RegGetValueW(Key, KeyName, ValueName, RRF_RT_REG_MULTI_SZ, nullptr, nullptr, &Size);
-    if ((Result == ERROR_PATH_NOT_FOUND) || (Result == ERROR_FILE_NOT_FOUND) || (Size == 0))
+    auto wideStrings = wil::reg::try_get_value_multistring(Key, KeyName, ValueName);
+    if (!wideStrings.has_value())
     {
-        //
-        // Convert the supplied string into a vector of strings.
-        //
-
         return Default;
     }
 
-    ReportErrorIfFailed(Result, Key, KeyName, ValueName);
-
-    //
-    // Allocate a buffer to hold the value and two NULL terminators.
-    //
-
-    std::vector<WCHAR> Buffer(Size + 2);
-
-    //
-    // Read the value.
-    //
-
-    Result = RegGetValueW(Key, KeyName, ValueName, RRF_RT_REG_MULTI_SZ, nullptr, Buffer.data(), &Size);
-    ReportErrorIfFailed(Result, Key, KeyName, ValueName);
-
-    //
-    // Convert the reg value into a vector of strings.
-    //
-
-    std::vector<std::string> Values{};
-    for (auto Current = Buffer.data(); UNICODE_NULL != *Current; Current += wcslen(Current) + 1)
+    std::vector<std::string> values;
+    for (const auto& ws : wideStrings.value())
     {
-        Values.push_back(wsl::shared::string::WideToMultiByte(Current));
+        values.push_back(wsl::shared::string::WideToMultiByte(ws.c_str()));
     }
 
-    return Values;
+    return values;
 }
 
 void wsl::windows::common::registry::WriteDword(_In_ HKEY Key, _In_ LPCWSTR SubKey, _In_ LPCWSTR ValueName, _In_ DWORD Value)
 {
-    const auto Result = RegSetKeyValueW(Key, SubKey, ValueName, REG_DWORD, &Value, sizeof(Value));
-    ReportErrorIfFailed(Result, Key, SubKey, ValueName);
+    const auto hr = wil::reg::set_value_dword_nothrow(Key, SubKey, ValueName, Value);
+    ReportHrErrorIfFailed(hr, Key, SubKey, ValueName);
 }
 
 void wsl::windows::common::registry::WriteQword(_In_ HKEY Key, _In_ LPCWSTR SubKey, _In_ LPCWSTR ValueName, _In_ ULONG64 Value)
 {
-    const auto Result = RegSetKeyValueW(Key, SubKey, ValueName, REG_QWORD, &Value, sizeof(Value));
-    ReportErrorIfFailed(Result, Key, SubKey, ValueName);
+    const auto hr = wil::reg::set_value_qword_nothrow(Key, SubKey, ValueName, Value);
+    ReportHrErrorIfFailed(hr, Key, SubKey, ValueName);
 }
 
 void wsl::windows::common::registry::WriteDefaultString(_In_ HKEY Key, _In_ LPCWSTR Value)
 {
-    SIZE_T StringLength = wcslen(Value);
-    THROW_IF_FAILED(SizeTAdd(StringLength, 1, &StringLength));
-    THROW_IF_FAILED(SizeTMult(StringLength, sizeof(WCHAR), &StringLength));
-
-    THROW_HR_IF(E_INVALIDARG, (StringLength > (SIZE_T)DWORD_MAX));
-
-    const auto Result = RegSetValueExW(Key, NULL, 0, REG_SZ, reinterpret_cast<const BYTE*>(Value), static_cast<DWORD>(StringLength));
-
-    ReportErrorIfFailed(Result, Key, nullptr, nullptr);
+    const auto hr = wil::reg::set_value_string_nothrow(Key, nullptr, Value);
+    ReportHrErrorIfFailed(hr, Key, nullptr, nullptr);
 }
 
 void wsl::windows::common::registry::WriteString(_In_ HKEY Key, _In_ LPCWSTR SubKey, _In_ LPCWSTR ValueName, _In_ LPCWSTR Value)
 {
-    SIZE_T StringLength = wcslen(Value);
-    THROW_IF_FAILED(SizeTAdd(StringLength, 1, &StringLength));
-    THROW_IF_FAILED(SizeTMult(StringLength, sizeof(WCHAR), &StringLength));
-
-    THROW_HR_IF(E_INVALIDARG, (StringLength > (SIZE_T)DWORD_MAX));
-
-    const auto Result = RegSetKeyValueW(Key, SubKey, ValueName, REG_SZ, Value, static_cast<DWORD>(StringLength));
-    ReportErrorIfFailed(Result, Key, SubKey, ValueName);
+    const auto hr = wil::reg::set_value_string_nothrow(Key, SubKey, ValueName, Value);
+    ReportHrErrorIfFailed(hr, Key, SubKey, ValueName);
 }
 
 void wsl::windows::common::registry::WriteStringSet(_In_ HKEY Key, _In_ LPCWSTR SubKey, _In_ LPCWSTR ValueName, _In_ const std::vector<std::wstring>& StringSet)
 {
     THROW_HR_IF(E_INVALIDARG, (StringSet.size() == 0));
 
-    //
-    // Combine each element into a NULL-separated string ending with two NULL
-    // terminators.
-    //
-
-    std::wstring Value;
-    for (SIZE_T Index = 0; Index < StringSet.size(); Index += 1)
+    // Build the double-null-terminated multi-string buffer manually since WIL lacks a nothrow multistring set API.
+    std::vector<WCHAR> buffer;
+    for (const auto& s : StringSet)
     {
-        Value += StringSet[Index] + UNICODE_NULL;
+        buffer.insert(buffer.end(), s.begin(), s.end());
+        buffer.push_back(UNICODE_NULL);
     }
 
-    Value += UNICODE_NULL;
+    buffer.push_back(UNICODE_NULL);
 
-    //
-    // Ensure the wstring ends with two NULL terminators.
-    //
+    const auto size = buffer.size() * sizeof(WCHAR);
+    THROW_HR_IF(E_INVALIDARG, (size > static_cast<size_t>(DWORD_MAX)));
 
-    WI_ASSERT((Value.size() >= 2) && (Value.at(Value.size() - 1) == UNICODE_NULL) && (Value.at(Value.size() - 2) == UNICODE_NULL));
-
-    //
-    // Store the value in the registry.
-    //
-
-    SIZE_T ValueSize;
-    THROW_IF_FAILED(SizeTMult(Value.size(), sizeof(WCHAR), &ValueSize));
-    THROW_HR_IF(E_INVALIDARG, (ValueSize > (SIZE_T)DWORD_MAX));
-
-    const auto Result = RegSetKeyValueW(Key, SubKey, ValueName, REG_MULTI_SZ, Value.c_str(), static_cast<DWORD>(ValueSize));
-    ReportErrorIfFailed(Result, Key, SubKey, ValueName);
+    const auto result = RegSetKeyValueW(Key, SubKey, ValueName, REG_MULTI_SZ, buffer.data(), static_cast<DWORD>(size));
+    ReportErrorIfFailed(result, Key, SubKey, ValueName);
 }
