@@ -295,8 +295,7 @@ void WSLCVirtualMachine::Initialize()
     // Configure GPU mounts if enabled
     MountGpuLibraries("/usr/lib/wsl/lib", "/usr/lib/wsl/drivers");
 
-    // Configure cold discard hint size for page reporting.
-    // This sets the minimum order of pages that will be reported as free to the hypervisor.
+    // Configure page reporting - set the minimum order of pages reported as free to the hypervisor.
     {
         const auto windowsVersion = wsl::windows::common::helpers::GetWindowsVersion();
         int pageReportingOrder = (windowsVersion.BuildNumber >= wsl::windows::common::helpers::WindowsBuildNumbers::Germanium) ? 5 : 9; // 128k or 2MB
