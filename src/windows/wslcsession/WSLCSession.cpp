@@ -34,29 +34,6 @@ constexpr DWORD c_processKillTimeoutMs = 10 * 1000;
 
 namespace {
 
-std::string IndentLines(const std::string& input, const std::string& prefix)
-{
-    if (input.empty())
-    {
-        return {};
-    }
-
-    std::string result = prefix;
-    for (size_t i = 0; i < input.size(); i++)
-    {
-        result.push_back(input[i]);
-        if (i + 1 < input.size())
-        {
-            if (input[i] == '\n' || (input[i] == '\r' && input[i + 1] != '\n'))
-            {
-                result.append(prefix);
-            }
-        }
-    }
-
-    return result;
-}
-
 void ValidateName(LPCSTR Name, size_t maxLength)
 {
     const auto& locale = std::locale::classic();
@@ -630,7 +607,9 @@ try
     auto unmountFolder =
         wil::scope_exit_log(WI_DIAGNOSTICS_INFO, [&]() { m_virtualMachine->UnmountWindowsFolder(mountPath.c_str()); });
 
-    std::vector<std::string> buildArgs{"/usr/bin/docker", "build", "--progress=rawjson"};
+    std::vector<std::string> buildArgs{"/usr/bin/docker", "build"};
+    bool verbose = WI_IsFlagSet(Options->Flags, WSLCBuildImageFlagsVerbose);
+    buildArgs.push_back(verbose ? "--progress=plain" : "--progress=tty");
     if (WI_IsFlagSet(Options->Flags, WSLCBuildImageFlagsNoCache))
     {
         buildArgs.push_back("--no-cache");
@@ -665,7 +644,7 @@ try
 
     WSL_LOG("BuildImageStart", TraceLoggingValue(wsl::shared::string::Join(buildArgs, ' ').c_str(), "Command"));
 
-    ServiceProcessLauncher buildLauncher(buildArgs[0], buildArgs, {}, WSLCProcessFlagsStdin);
+    ServiceProcessLauncher buildLauncher(buildArgs[0], buildArgs, {"TERM=xterm-256color"}, WSLCProcessFlagsStdin);
     auto buildProcess = buildLauncher.Launch(*m_virtualMachine);
 
     auto io = CreateIOContext();
@@ -673,51 +652,7 @@ try
     io.AddHandle(std::make_unique<relay::RelayHandle<relay::ReadHandle>>(
         buildFileHandle.Get(), common::relay::HandleWrapper{buildProcess.GetStdHandle(WSLCFDStdin)}));
 
-    bool verbose = WI_IsFlagSet(Options->Flags, WSLCBuildImageFlagsVerbose);
     std::string allOutput;
-    std::string pendingJson;
-    std::set<std::string> reportedSteps;
-    std::set<std::string> reportedErrors;
-    std::map<std::string, std::string> digestToStageName;
-    bool needsNewline = false; // true when the last log chunk didn't end with \n
-    std::string lastLogVertex; // digest of the vertex that produced the last log output
-
-    // Extract the named build stage from a BuildKit vertex name. Vertices within the same named stage
-    // (e.g. "[builder 1/3]" and "[builder 2/3]") share a key. Returns empty for unnamed stages.
-    auto getStageName = [](const std::string& name) -> std::string {
-        if (name.size() < 2 || name[0] != '[')
-        {
-            return {};
-        }
-
-        auto close = name.find(']');
-        if (close == std::string::npos)
-        {
-            return {};
-        }
-
-        // Pattern: "[name N/M]" or "[N/M]". The stage name is the part before "N/M".
-        std::string content = name.substr(1, close - 1);
-        auto slash = content.find('/');
-        if (slash != std::string::npos)
-        {
-            auto space = content.rfind(' ', slash);
-            if (space != std::string::npos)
-            {
-                return content.substr(0, space);
-            }
-        }
-
-        return {};
-    };
-
-    auto logPrefix = [](const std::string& name) -> std::string {
-        if (name.empty())
-        {
-            return "  | ";
-        }
-        return "  [" + name + "] ";
-    };
 
     auto reportProgress = [&](const std::string& message) {
         if (ProgressCallback != nullptr)
@@ -726,111 +661,17 @@ try
         }
     };
 
-    auto flushLine = [&]() {
-        if (needsNewline)
-        {
-            reportProgress("\n");
-            needsNewline = false;
-        }
-    };
-
-    // Accumulate lines and use accept() to detect complete JSON objects. Check for non-JSON lines between JSON objects and add
-    // them to the output in case they contain helpful information about the build.
-    auto captureOutput = [&](const gsl::span<char>& content) {
-        std::string line{content.begin(), content.end()};
-
-        pendingJson.append(line);
-
-        if (!nlohmann::json::accept(pendingJson))
-        {
-            if (pendingJson.empty() || pendingJson[0] != '{')
-            {
-                allOutput.append(pendingJson).append("\n");
-                pendingJson.clear();
-            }
-
-            return;
-        }
-
-        auto json = nlohmann::json::parse(pendingJson);
-        pendingJson.clear();
-
-        docker_schema::BuildKitSolveStatus status{};
-        from_json(json, status);
-
-        // Process vertices before logs so digestToStageName is populated for log correlation.
-        for (const auto& vertex : status.vertexes)
-        {
-            if (!verbose && vertex.name.find("[internal]") != std::string::npos)
-            {
-                continue;
-            }
-
-            digestToStageName.try_emplace(vertex.digest, getStageName(vertex.name));
-
-            if (!vertex.started.empty() && reportedSteps.insert(vertex.digest).second)
-            {
-                flushLine();
-                reportProgress(vertex.name + "\n");
-            }
-
-            if (!vertex.error.empty() && reportedErrors.insert(vertex.digest).second)
-            {
-                flushLine();
-                reportProgress(vertex.error + "\n");
-            }
-        }
-
-        for (const auto& log : status.logs)
-        {
-            if (auto it = digestToStageName.find(log.vertex); it != digestToStageName.end() && !log.data.empty())
-            {
-                std::string decoded = wslutil::Base64Decode(log.data);
-                if (!decoded.empty())
-                {
-                    if (log.vertex != lastLogVertex && decoded[0] != '\n')
-                    {
-                        flushLine();
-                    }
-
-                    // When continuing an unterminated line, emit the leading \n or \r directly
-                    // so it terminates/overwrites cleanly without a spurious prefix.
-                    if (needsNewline && (decoded[0] == '\n' || decoded[0] == '\r'))
-                    {
-                        reportProgress(decoded.substr(0, 1));
-                        decoded.erase(0, 1);
-                    }
-
-                    if (!decoded.empty())
-                    {
-                        reportProgress(IndentLines(decoded, logPrefix(it->second)));
-                    }
-
-                    needsNewline = !decoded.empty() && decoded.back() != '\n';
-                    lastLogVertex = log.vertex;
-                }
-            }
-        }
-
-        for (const auto& entry : status.statuses)
-        {
-            if (auto it = digestToStageName.find(entry.vertex);
-                it != digestToStageName.end() && !entry.id.empty() && reportedSteps.insert(entry.id).second)
-            {
-                flushLine();
-                reportProgress(logPrefix(it->second) + entry.id + "\n");
-            }
-        }
-    };
-
-    // With --progress=rawjson, docker writes progress to stderr and the final image ID to stdout on success (empty on
-    // failure). Stdout is drained into allOutput (shown only on error) and its EOF signals build completion.
+    // With --progress=tty, docker writes colored progress to stderr and the final image ID to stdout on success
+    // (empty on failure). Stdout is drained into allOutput (shown only on error) and its EOF signals build completion.
     io.AddHandle(
         std::make_unique<relay::ReadHandle>(
             buildProcess.GetStdHandle(1), [&](const auto& content) { allOutput.append(content.begin(), content.end()); }),
         relay::MultiHandleWait::CancelOnCompleted);
 
-    io.AddHandle(std::make_unique<relay::LineBasedReadHandle>(buildProcess.GetStdHandle(2), captureOutput, false));
+    io.AddHandle(std::make_unique<relay::ReadHandle>(buildProcess.GetStdHandle(2), [&](const auto& content) {
+        std::string chunk{content.begin(), content.end()};
+        reportProgress(chunk);
+    }));
 
     // Handle cancellation within the IO loop (NeedNotComplete) so pipes keep draining.
     bool cancelled = false;
@@ -863,7 +704,6 @@ try
     }
     catch (...)
     {
-        flushLine();
         LOG_IF_FAILED(buildProcess.Get().Signal(WSLCSignalSIGTERM));
         try
         {
@@ -886,8 +726,6 @@ try
         }
         throw;
     }
-
-    flushLine();
 
     THROW_HR_IF_MSG(E_ABORT, cancelled, "Cancellation handle was signaled");
 

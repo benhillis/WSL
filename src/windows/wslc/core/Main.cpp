@@ -40,6 +40,15 @@ try
     auto cleanupTelemetry = wil::scope_exit_log(WI_DIAGNOSTICS_INFO, []() { WslTraceLoggingUninitialize(); });
 
     wslutil::SetCrtEncoding(_O_U8TEXT);
+
+    // Enable VT processing so ANSI escape sequences (colors, cursor movement) render correctly.
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD consoleMode = 0;
+    if (GetConsoleMode(hOut, &consoleMode))
+    {
+        SetConsoleMode(hOut, consoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
+
     auto coInit = wil::CoInitializeEx(COINIT_MULTITHREADED);
     wslutil::CoInitializeSecurity();
 
