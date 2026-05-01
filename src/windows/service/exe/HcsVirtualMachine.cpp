@@ -105,8 +105,8 @@ HcsVirtualMachine::HcsVirtualMachine(_In_ const WSLCSessionSettings* Settings)
     std::wstring kernelCmdLine = L"initrd=\\" LXSS_VM_MODE_INITRD_NAME L" " TEXT(WSLC_ROOT_INIT_ENV) L"=1 panic=-1";
     kernelCmdLine += std::format(L" nr_cpus={}", Settings->CpuCount);
 
-    // Enable timesync workaround to sync on resume from sleep in modern standby.
-    kernelCmdLine += L" hv_utils.timesync_implicit=1";
+    // Append common kernel parameters shared between WSL2 and WSLC.
+    helpers::AppendCommonKernelCommandLine(kernelCmdLine);
 
     // Setup dmesg collector with optional DmesgOutput handle.
     // TODO: move dmesg collector to user session process.

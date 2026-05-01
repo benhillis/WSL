@@ -730,3 +730,12 @@ try
     wsl::windows::common::registry::WriteString(dcatKey.get(), nullptr, L"Version", registeredVersion.c_str());
 }
 CATCH_LOG()
+
+void wsl::windows::common::helpers::AppendCommonKernelCommandLine(_Inout_ std::wstring& kernelCmdLine)
+{
+    // Enable timesync workaround to sync on resume from sleep in modern standby.
+    kernelCmdLine += L" hv_utils.timesync_implicit=1";
+
+    // Disable rate limiting of user writes to dmesg.
+    kernelCmdLine += L" printk.devkmsg=on";
+}

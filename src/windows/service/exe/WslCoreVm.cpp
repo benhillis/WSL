@@ -1524,8 +1524,8 @@ std::wstring WslCoreVm::GenerateConfigJson()
     // Set number of processors.
     kernelCmdLine += std::format(L" nr_cpus={}", m_vmConfig.ProcessorCount);
 
-    // Enable timesync workaround to sync on resume from sleep in modern standby.
-    kernelCmdLine += L" hv_utils.timesync_implicit=1";
+    // Append common kernel parameters shared between WSL2 and WSLC.
+    helpers::AppendCommonKernelCommandLine(kernelCmdLine);
 
     // If using virtio features, enable SWIOTLB as a perf optimization (will cause VM to consume 64MB more memory).
     if (m_vmConfig.EnableVirtio9p || m_vmConfig.EnableVirtioFs || m_vmConfig.NetworkingMode == NetworkingMode::VirtioProxy)

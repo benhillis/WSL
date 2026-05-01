@@ -1507,15 +1507,6 @@ Return Value:
     }
 
     //
-    // Disable rate limiting of user writes to dmesg.
-    //
-
-    if (WriteToFile("/proc/sys/kernel/printk_devkmsg", "on\n") < 0)
-    {
-        return -1;
-    }
-
-    //
     // Set the hostname.
     //
 
