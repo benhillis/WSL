@@ -1392,6 +1392,29 @@ class UnitTests
         VERIFY_ARE_EQUAL(output, ExpectedOutput);
     }
 
+    static std::wstring ExpectedUsageMessage()
+    {
+        std::wstring expectedUsageMessage;
+        for (auto e : wsl::shared::Localization::MessageWslUsage())
+        {
+            if (e == L'\n')
+            {
+                expectedUsageMessage += L'\r';
+            }
+
+            expectedUsageMessage += e;
+        }
+
+        return expectedUsageMessage + L"\r\n";
+    }
+
+    static void VerifyInvalidUsage(const std::wstring& Cmd)
+    {
+        auto [output, error] = LxsstuLaunchWslAndCaptureOutput(Cmd.c_str(), -1);
+        VERIFY_ARE_EQUAL(ExpectedUsageMessage(), output);
+        VERIFY_ARE_EQUAL(error, L"");
+    }
+
     TEST_METHOD(ErrorMessages)
     {
         if (LxsstuVmMode()) // wsl --mount and bridged networking only exist in WSL2.
@@ -1591,20 +1614,7 @@ class UnitTests
 
         VerifyOutput(L"--install --no-distribution", L"The operation completed successfully. \r\n");
 
-        {
-            std::wstring expectedUsageMessage;
-            for (auto e : wsl::shared::Localization::MessageWslUsage())
-            {
-                if (e == L'\n')
-                {
-                    expectedUsageMessage += L'\r';
-                }
-
-                expectedUsageMessage += e;
-            }
-
-            VerifyOutput(L"--manage --move .", expectedUsageMessage + L"\r\n", -1);
-        }
+        VerifyInvalidUsage(L"--manage --move .");
     }
 
     TEST_METHOD(CommandLineParsing)
@@ -1628,6 +1638,12 @@ class UnitTests
         VerifyOutput(L"--exec echo -n \\\"a\\\"", L"\"a\"");
         VerifyOutput(L"--exec echo -n \"a\"\"b\"", L"a\"b");
         VerifyOutput(L"--exec echo -n \\\"", L"\"");
+    }
+
+    TEST_METHOD(ManageInvalidUsage)
+    {
+        VerifyInvalidUsage(L"--manage " LXSS_DISTRO_NAME_TEST_L L" --resize 1500GB --allow-unsafe");
+        VerifyInvalidUsage(L"--manage " LXSS_DISTRO_NAME_TEST_L L" --compact --allow-unsafe");
     }
 
     // This test validates that the help messages for wsl.exe and wsl.config are correctly displayed.
@@ -3277,7 +3293,6 @@ Error code: Wsl/InstallDistro/WSL_E_DISTRO_NOT_FOUND
                 out);
         }
 
-        LxsstuLaunchWslAndCaptureOutput(std::format(L"--manage {} --resize 1500GB --allow-unsafe", name), -1);
     }
 
     WSL2_TEST_METHOD(Compact)
@@ -3296,9 +3311,6 @@ Error code: Wsl/InstallDistro/WSL_E_DISTRO_NOT_FOUND
         std::tie(out, err) = LxsstuLaunchWslAndCaptureOutput(std::format(L"--manage {} --compact", name));
         VERIFY_ARE_EQUAL(err, L"");
 
-        std::tie(out, err) = LxsstuLaunchWslAndCaptureOutput(std::format(L"--manage {} --compact --allow-unsafe", name), -1);
-        VERIFY_ARE_EQUAL(err, L"");
-
         std::tie(out, err) = LxsstuLaunchWslAndCaptureOutput(std::format(L"-d {} echo ok", name));
         VERIFY_ARE_EQUAL(out, L"ok\n");
         VERIFY_ARE_EQUAL(err, L"");
@@ -3307,6 +3319,7 @@ Error code: Wsl/InstallDistro/WSL_E_DISTRO_NOT_FOUND
         {
             WslKeepAlive keepAlive;
             std::tie(out, err) = LxsstuLaunchWslAndCaptureOutput(L"--manage test_distro --compact", -1);
+            VERIFY_IS_TRUE(out.find(wsl::shared::Localization::MessageVhdInUse()) != std::wstring::npos);
             VERIFY_IS_TRUE(out.find(L"Wsl/Service/WSL_E_DISTRO_NOT_STOPPED") != std::wstring::npos);
             VERIFY_ARE_EQUAL(err, L"");
         }
