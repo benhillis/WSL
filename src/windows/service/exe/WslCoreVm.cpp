@@ -425,14 +425,19 @@ void WslCoreVm::Initialize(const GUID& VmId, const wil::shared_handle& UserToken
     // Receive and parse the guest kernel version
     ReadGuestCapabilities();
 
-    // Cache the effective swiotlb configuration. The wsldevicehost device-option token is only
-    // honored by kernels carrying the WSL hv_pci_swiotlb patch; if the running kernel lacks it,
-    // emit a single user warning and leave the cached value empty so all attachment sites skip it.
+    // Cache the effective swiotlb configuration.  The host emits "hv_pci_swiotlb=<size>"
+    // on the kernel command line; the kernel (with the WSL hv_pci_swiotlb patch) picks
+    // a valid GPA, allocates the pool, and publishes the actual (base, size) via sysfs.
+    // mini_init reads it back in SendCapabilities; we materialize the wsldevicehost
+    // device-option token from those discovered values so the host backend and the guest
+    // kernel agree on exactly which GPA range carries bounce-buffered DMA.  An empty
+    // m_swiotlbConfig downstream means "no dedicated pool"; attachment sites simply
+    // omit the swiotlb= device option.
     if (!m_vmConfig.SwiotlbConfig.empty())
     {
-        if (m_kernelSupportsHvPciSwiotlb)
+        if (m_hvPciSwiotlbBase != 0 && m_hvPciSwiotlbSize != 0)
         {
-            m_swiotlbConfig = m_vmConfig.SwiotlbConfig;
+            m_swiotlbConfig = std::format(L"0x{:x},{}M", m_hvPciSwiotlbBase, m_hvPciSwiotlbSize / (1024ULL * 1024ULL));
         }
         else
         {
@@ -2332,11 +2337,13 @@ void WslCoreVm::ReadGuestCapabilities()
     }
 
     m_seccompAvailable = info.SeccompAvailable;
-    m_kernelSupportsHvPciSwiotlb = info.KernelSupportsHvPciSwiotlb;
+    m_hvPciSwiotlbBase = info.HvPciSwiotlbBase;
+    m_hvPciSwiotlbSize = info.HvPciSwiotlbSize;
     WSL_LOG(
         "GuestKernelInfo",
         TraceLoggingValue(m_seccompAvailable, "SeccompAvailable"),
-        TraceLoggingValue(m_kernelSupportsHvPciSwiotlb, "KernelSupportsHvPciSwiotlb"),
+        TraceLoggingValue(m_hvPciSwiotlbBase, "HvPciSwiotlbBase"),
+        TraceLoggingValue(m_hvPciSwiotlbSize, "HvPciSwiotlbSize"),
         TraceLoggingValue(std::get<0>(m_kernelVersion), "Version"),
         TraceLoggingValue(std::get<1>(m_kernelVersion), "Revision"),
         TraceLoggingValue(std::get<2>(m_kernelVersion), "Minor"));

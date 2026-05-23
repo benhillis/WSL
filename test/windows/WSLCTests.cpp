@@ -128,13 +128,6 @@ class WSLCTests
         settings.MaximumStorageSizeMb = 1024 * 20; // 20GB.
         settings.NetworkingMode = networkingMode;
 
-        // TEMP DIAGNOSTIC (revert before merge): enable earlycon so we can capture
-        // pre-virtio-console kernel output for the intermittent silent-boot hang
-        // seen in the swiotlb branch CI runs (no GuestLog events from the failing
-        // VMs). Adds `earlycon=uart8250,io,0x3f8,115200` to the kernel cmdline and
-        // wires COM1 into the host DmesgCollector pipe.
-        settings.FeatureFlags = WslcFeatureFlagsEarlyBootDmesg;
-
         return settings;
     }
 

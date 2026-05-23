@@ -304,7 +304,8 @@ private:
     std::tuple<std::uint32_t, std::uint32_t, std::uint32_t> m_kernelVersion;
     std::wstring m_kernelVersionString;
     bool m_seccompAvailable;
-    bool m_kernelSupportsHvPciSwiotlb = false;
+    uint64_t m_hvPciSwiotlbBase = 0;
+    uint64_t m_hvPciSwiotlbSize = 0;
     std::wstring m_swiotlbConfig;
     std::wstring m_sharedMemoryRoot;
     std::filesystem::path m_installPath;

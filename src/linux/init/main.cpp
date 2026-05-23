@@ -118,7 +118,6 @@ struct VmConfiguration
 int g_LogFd = STDERR_FILENO;
 int g_TelemetryFd = -1;
 std::optional<bool> g_EnableSocketLogging;
-bool g_KernelSupportsHvPciSwiotlb = false;
 
 int Chroot(const char* Target);
 
@@ -3400,7 +3399,25 @@ try
 
     uint32_t SeccompFlag = SECCOMP_RET_USER_NOTIF;
     Message->SeccompAvailable = syscall(__NR_seccomp, SECCOMP_GET_ACTION_AVAIL, 0, &SeccompFlag) == 0;
-    Message->KernelSupportsHvPciSwiotlb = g_KernelSupportsHvPciSwiotlb;
+
+    //
+    // Discover the hv_pci dedicated swiotlb pool published by the kernel.
+    // Both files exist only when the kernel carries the WSL hv_pci_swiotlb
+    // patch AND the pool was created successfully; otherwise both fields
+    // stay zero and the host knows to skip the optimization.
+    //
+    Message->HvPciSwiotlbBase = 0;
+    Message->HvPciSwiotlbSize = 0;
+    try
+    {
+        Message->HvPciSwiotlbBase = std::stoull(UtilReadFileContent("/sys/kernel/hv_pci_swiotlb/base"), nullptr, 0);
+        Message->HvPciSwiotlbSize = std::stoull(UtilReadFileContent("/sys/kernel/hv_pci_swiotlb/size"), nullptr, 0);
+    }
+    catch (...)
+    {
+        Message->HvPciSwiotlbBase = 0;
+        Message->HvPciSwiotlbSize = 0;
+    }
 
     Channel.SendMessage<LX_INIT_GUEST_CAPABILITIES>(Message.Span());
     return 0;
@@ -3696,11 +3713,13 @@ int main(int Argc, char* Argv[])
         LOG_ERROR("unsetenv failed {}", errno);
     }
 
-    // Linux passes unrecognized key=value cmdline parameters to init as env vars,
-    // so seeing hv_pci_swiotlb= in the environment means the kernel didn't consume
-    // it (no WSL swiotlb patch).
-    g_KernelSupportsHvPciSwiotlb = (getenv("hv_pci_swiotlb") == nullptr);
-    if (!g_KernelSupportsHvPciSwiotlb && unsetenv("hv_pci_swiotlb"))
+    // Linux passes unrecognized key=value cmdline parameters to init as env vars.
+    // The hv_pci_swiotlb= cmdline option is consumed by the kernel patch when
+    // present; if it leaks into our environment, the kernel did not consume it.
+    // Either way we drop it from the environment so children don't see it; the
+    // canonical "kernel supports hv_pci_swiotlb" signal is the presence of the
+    // /sys/kernel/hv_pci_swiotlb sysfs group, which SendCapabilities reads.
+    if (getenv("hv_pci_swiotlb") != nullptr && unsetenv("hv_pci_swiotlb"))
     {
         LOG_ERROR("unsetenv failed {}", errno);
     }

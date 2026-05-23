@@ -2132,15 +2132,16 @@ Error code: Wsl/InstallDistro/WSL_E_DISTRO_NOT_FOUND
         //
         // With wsl2.virtio enabled (the default), a valid swiotlb value is accepted silently.
         validateWarnings(L"[experimental]\nswiotlb=0x100000000,64M", L"");
+        validateWarnings(L"[experimental]\nswiotlb=64M", L"");
 
         // Malformed values are rejected by the parser; only the parser warning is reported.
         validateWarnings(
             L"[experimental]\nswiotlb=garbage",
-            std::format(L"wsl: Invalid SWIOTLB value 'garbage' for key 'experimental.swiotlb' in {}:22. Expected format: '0x<hex>,<size>K|M'\r\n", wslConfigPath));
+            std::format(L"wsl: Invalid SWIOTLB value 'garbage' for key 'experimental.swiotlb' in {}:22. Expected format: '[0x<hex>,]<size>K|M'\r\n", wslConfigPath));
 
         validateWarnings(
             L"[experimental]\nswiotlb=0x100000000,64g",
-            std::format(L"wsl: Invalid SWIOTLB value '0x100000000,64g' for key 'experimental.swiotlb' in {}:22. Expected format: '0x<hex>,<size>K|M'\r\n", wslConfigPath));
+            std::format(L"wsl: Invalid SWIOTLB value '0x100000000,64g' for key 'experimental.swiotlb' in {}:22. Expected format: '[0x<hex>,]<size>K|M'\r\n", wslConfigPath));
 
         // Verify that the vhdSize setting is parsed correctly.
         validateWarnings(L"[wsl2]\ndefaultVhdSize=64GB\n", L"");

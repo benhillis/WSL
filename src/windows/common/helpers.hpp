@@ -207,9 +207,10 @@ void RegisterWithDcat(_In_ bool IncludeVersionNumber = true);
 
 void AppendCommonKernelCommandLine(_Inout_ std::wstring& kernelCmdLine, _In_ int pageReportingOrder, _In_ const std::wstring& swiotlbConfig = {});
 
-// Compute the default swiotlb device-options token ("0x<base>,<size>M") for the current
-// VM. Returns an empty string for VMs too small to host the bounce buffer. Used when the
-// user has not provided an explicit experimental.swiotlb value.
+// Compute the default swiotlb size token ("<size>M") for the current VM. Returns an
+// empty string for VMs too small to host the bounce buffer. Used when the user has not
+// provided an explicit experimental.swiotlb value. The host only requests a size; the
+// guest kernel picks the actual GPA and reports it back via the capability channel.
 std::wstring ComputeDefaultSwiotlbConfig(_In_ UINT64 memoryBytes);
 
 } // namespace wsl::windows::common::helpers

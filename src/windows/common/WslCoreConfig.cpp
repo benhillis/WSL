@@ -66,11 +66,15 @@ void wsl::core::Config::ParseConfigFile(_In_opt_ LPCWSTR ConfigFilePath, _In_opt
 
     auto parseSwiotlb = [&](const char* name, const char* value, const wchar_t* fileName, unsigned long fileLine) {
         // If the value does not conform to the expected format, SWIOTLB customization is disabled.
+        // Accepted forms:
+        //   <size>K|M               - kernel picks the base (preferred)
+        //   0x<hex>,<size>K|M       - host-supplied base hint; the kernel patch validates it and
+        //                             falls back to a kernel-picked base if the hint is unusable.
         SwiotlbConfig.clear();
         try
         {
             auto wideValue = wsl::shared::string::MultiByteToWide(value);
-            std::wregex swiotlbPattern(L"^(0x[0-9a-fA-F]+,[0-9]+[mk])$", std::regex::icase);
+            std::wregex swiotlbPattern(L"^(0x[0-9a-fA-F]+,)?[0-9]+[mk]$", std::regex::icase);
             if (!std::regex_match(wideValue, swiotlbPattern))
             {
                 EMIT_USER_WARNING(shared::Localization::MessageConfigInvalidSwiotlb(value, name, fileName, fileLine));

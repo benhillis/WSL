@@ -783,17 +783,17 @@ void wsl::windows::common::helpers::AppendCommonKernelCommandLine(
 
 std::wstring wsl::windows::common::helpers::ComputeDefaultSwiotlbConfig(_In_ UINT64 memoryBytes)
 {
-    constexpr UINT64 c_swiotlbBase = _1GB;
     constexpr UINT64 c_swiotlbSize = 64 * _1MB;
 
-    // Skip swiotlb on VMs that cannot fit the reserved buffer. Users can still opt in explicitly
-    // via experimental.swiotlb in .wslconfig.
-    if (memoryBytes < c_swiotlbBase + c_swiotlbSize)
+    // Skip swiotlb on VMs that cannot fit the reserved buffer.  Users can still opt in explicitly
+    // via experimental.swiotlb in .wslconfig.  Require enough RAM that reserving the pool below
+    // 4 GiB leaves room for early-boot allocations and the kernel image itself.
+    if (memoryBytes < _1GB + c_swiotlbSize)
     {
         return {};
     }
 
-    // 1 GiB base sits below 4 GiB (32-bit PCI BAR limit on ARM64 virtio), below the Hyper-V
-    // low PCI MMIO hole (starts at >= 3 GiB on both x64 and ARM64), and above early boot allocations.
-    return L"0x40000000,64M";
+    // Emit a size-only token.  The kernel patch picks a valid base via memblock_phys_alloc_range();
+    // the host learns the actual (base, size) back through the guest-capability message.
+    return L"64M";
 }
