@@ -5871,6 +5871,78 @@ Error code: Wsl/InstallDistro/WSL_E_INVALID_JSON\r\n",
         VERIFY_ARE_EQUAL(error, L"");
     }
 
+    TEST_METHOD(ModernInstallWithHiddenTempFolder)
+    {
+        // Regression test for installing while %TEMP% has the HIDDEN attribute.
+        // The download must still succeed (see DownloadFileImpl in wslutil.cpp): the
+        // WinRT StorageFolder broker used to reject hidden paths with E_ACCESSDENIED.
+        // This exercises the real HTTP download path (unlike file:// installs, which
+        // never download), with the destination temp folder marked hidden.
+        constexpr auto tarName = L"hidden-temp.tar";
+
+        VERIFY_ARE_EQUAL(LxsstuLaunchWsl(std::format(L"--export test_distro {}", tarName)), 0L);
+
+        auto cleanup = wil::scope_exit_log(WI_DIAGNOSTICS_INFO, []() {
+            DeleteFile(tarName);
+            LxsstuLaunchWsl(L"--unregister hidden-temp");
+        });
+
+        wil::unique_handle tarHandle{CreateFile(tarName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr)};
+        VERIFY_IS_TRUE(!!tarHandle);
+
+        auto tarHash = wsl::windows::common::string::BytesToHex(wsl::windows::common::wslutil::HashFile(tarHandle.get(), CALG_SHA_256));
+
+        constexpr auto manifestEndpoint = L"http://127.0.0.1:6668/";
+        constexpr auto tarEndpoint = L"http://127.0.0.1:6669/";
+
+        auto manifest = std::format(
+            LR"({{
+    \"ModernDistributions\": {{
+        \"hidden-temp\": [
+            {{
+                \"Name\": \"hidden-temp\",
+                \"FriendlyName\": \"FriendlyName\",
+                \"Default\": true,
+                \"Amd64Url\": {{
+                    \"Url\": \"{}/distro.tar\",
+                    \"Sha256\": \"{}\"
+                }}
+            }}
+        ]
+    }}}})",
+            tarEndpoint,
+            tarHash);
+
+        UniqueWebServer apiServer(manifestEndpoint, manifest.c_str());
+        UniqueWebServer fileServer(tarEndpoint, std::filesystem::path(tarName));
+
+        RegistryKeyChange<std::wstring> manifestOverride{
+            HKEY_LOCAL_MACHINE, LXSS_REGISTRY_PATH, wsl::windows::common::distribution::c_distroUrlRegistryValue, manifestEndpoint};
+
+        // Point %TEMP%/%TMP% at a hidden folder. The download lands here, so a hidden
+        // temp must not break installation.
+        const auto hiddenTempFolder = std::filesystem::temp_directory_path() / L"wsl-hidden-temp-test";
+        std::filesystem::create_directories(hiddenTempFolder);
+        auto cleanupTempFolder = wil::scope_exit_log(WI_DIAGNOSTICS_INFO, [&] {
+            std::error_code error;
+            std::filesystem::remove_all(hiddenTempFolder, error);
+        });
+
+        const auto originalAttributes = GetFileAttributesW(hiddenTempFolder.c_str());
+        VERIFY_IS_TRUE(originalAttributes != INVALID_FILE_ATTRIBUTES);
+        VERIFY_IS_TRUE(SetFileAttributesW(hiddenTempFolder.c_str(), originalAttributes | FILE_ATTRIBUTE_HIDDEN));
+
+        ScopedEnvVariable temp(L"TEMP", hiddenTempFolder.wstring(), true);
+        ScopedEnvVariable tmp(L"TMP", hiddenTempFolder.wstring(), true);
+
+        auto [output, error] = LxsstuLaunchWslAndCaptureOutput(L"--install --no-launch hidden-temp");
+        VERIFY_ARE_EQUAL(
+            output,
+            L"Downloading: FriendlyName\r\nInstalling: FriendlyName\r\nDistribution successfully installed. It can be "
+            L"launched via 'wsl.exe -d hidden-temp'\r\n");
+        VERIFY_ARE_EQUAL(error, L"");
+    }
+
     TEST_METHOD(DistroTarFormats)
     {
         auto version = LxsstuVmMode() ? L"2" : L"1";

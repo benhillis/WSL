@@ -368,14 +368,54 @@ std::wstring wsl::windows::common::wslutil::DownloadFileImpl(
         Filename = Url.substr(lastSlash + 1);
     }
 
-    const auto downloadFolder =
-        winrt::Windows::Storage::StorageFolder::GetFolderFromPathAsync(std::filesystem::temp_directory_path().wstring()).get();
+    // Create the destination file via Win32 rather than the WinRT StorageFolder broker.
+    // StorageFolder::GetFolderFromPathAsync rejects paths that carry the HIDDEN or SYSTEM
+    // attribute (returning E_ACCESSDENIED), so a user whose %TEMP% is hidden cannot download.
+    // Win32 file creation has no such restriction. The original Filename (including its
+    // extension) must be preserved: appx/msi installation infers the package type from it.
+    const auto tempDirectory = std::filesystem::temp_directory_path();
+    const std::filesystem::path requestedName{Filename};
+    const auto stem = requestedName.stem().wstring();
+    const auto extension = requestedName.extension().wstring();
 
-    const auto file =
-        downloadFolder.CreateFileAsync(Filename, winrt::Windows::Storage::CreationCollisionOption::GenerateUniqueName).get();
-    auto deleteFileOnFailure = wil::scope_exit_log(WI_DIAGNOSTICS_INFO, [&] { file.DeleteAsync().get(); });
+    std::filesystem::path path;
+    wil::unique_hfile file;
+    constexpr unsigned int c_maxNamedAttempts = 1000;
+    for (unsigned int attempt = 0; !file; ++attempt)
+    {
+        // Try the requested name first, then numbered variants, then fall back to a
+        // GUID-based name (still preserving the extension) to guarantee termination.
+        std::wstring candidate;
+        if (attempt == 0)
+        {
+            candidate = Filename;
+        }
+        else if (attempt < c_maxNamedAttempts)
+        {
+            candidate = std::format(L"{} ({}){}", stem, attempt, extension);
+        }
+        else
+        {
+            GUID guid{};
+            THROW_IF_FAILED(CoCreateGuid(&guid));
+            candidate = wsl::shared::string::GuidToString<wchar_t>(guid, wsl::shared::string::GuidToStringFlags::None) + extension;
+        }
 
-    const auto outputStream = file.OpenAsync(winrt::Windows::Storage::FileAccessMode::ReadWrite).get().GetOutputStreamAt(0);
+        path = tempDirectory / candidate;
+        file.reset(CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, nullptr));
+        if (file)
+        {
+            break;
+        }
+
+        const auto lastError = GetLastError();
+        THROW_HR_IF(HRESULT_FROM_WIN32(lastError), lastError != ERROR_FILE_EXISTS && lastError != ERROR_ALREADY_EXISTS);
+    }
+
+    auto deleteFileOnFailure = wil::scope_exit_log(WI_DIAGNOSTICS_INFO, [&] {
+        file.reset();
+        LOG_IF_WIN32_BOOL_FALSE(DeleteFileW(path.c_str()));
+    });
 
     // By default downloaded files are cached in %appdata%/local/packages/{package-family}/AC/InetCache .
     // Disable caching since there's no reason to keep local copies of .msixbundle files.
@@ -385,31 +425,48 @@ std::wstring wsl::windows::common::wslutil::DownloadFileImpl(
     const winrt::Windows::Web::Http::HttpClient client(filter);
     client.DefaultRequestHeaders().Append(L"Accept", L"application/octet-stream");
     client.DefaultRequestHeaders().Append(L"User-Agent", c_userAgent);
-    const auto asyncResponse = client.GetInputStreamAsync(winrt::Windows::Foundation::Uri(Url));
 
-    std::atomic<uint64_t> totalBytes;
-    asyncResponse.Progress(
-        [&](const winrt::Windows::Foundation::IAsyncOperationWithProgress<winrt::Windows::Storage::Streams::IInputStream, winrt::Windows::Web::Http::HttpProgress>&,
-            const winrt::Windows::Web::Http::HttpProgress& progress) {
-            if (progress.TotalBytesToReceive)
-            {
-                totalBytes = progress.TotalBytesToReceive.GetUInt64();
-            }
-        });
+    const auto response = client
+                              .GetAsync(winrt::Windows::Foundation::Uri(Url), winrt::Windows::Web::Http::HttpCompletionOption::ResponseHeadersRead)
+                              .get();
+    response.EnsureSuccessStatusCode();
 
-    auto download = winrt::Windows::Storage::Streams::RandomAccessStream::CopyAsync(asyncResponse.get(), outputStream);
+    const auto contentLength = response.Content().Headers().ContentLength();
+    const uint64_t totalBytes = contentLength ? contentLength.Value() : 0;
 
-    download.Progress([&](const auto& _, uint64_t progress) {
+    // Stream the response body into the Win32 file handle.
+    winrt::Windows::Storage::Streams::DataReader reader{response.Content().ReadAsInputStreamAsync().get()};
+    reader.InputStreamOptions(winrt::Windows::Storage::Streams::InputStreamOptions::Partial);
+
+    constexpr uint32_t c_chunkSize = 64 * 1024;
+    uint64_t receivedBytes = 0;
+    std::vector<uint8_t> buffer;
+    for (;;)
+    {
+        const uint32_t loaded = reader.LoadAsync(c_chunkSize).get();
+        if (loaded == 0)
+        {
+            break;
+        }
+
+        buffer.resize(loaded);
+        reader.ReadBytes(buffer);
+
+        DWORD written{};
+        THROW_IF_WIN32_BOOL_FALSE(WriteFile(file.get(), buffer.data(), loaded, &written, nullptr));
+        THROW_HR_IF(E_UNEXPECTED, written != loaded);
+
+        receivedBytes += loaded;
         if (totalBytes != 0)
         {
-            Progress(progress, totalBytes);
+            Progress(receivedBytes, totalBytes);
         }
-    });
+    }
 
-    download.get();
+    file.reset();
     deleteFileOnFailure.release();
 
-    return file.Path().c_str();
+    return path.wstring();
 }
 
 [[nodiscard]] HANDLE wsl::windows::common::wslutil::DuplicateHandle(_In_ HANDLE Handle, _In_ std::optional<DWORD> DesiredAccess, _In_ BOOL InheritHandle)
