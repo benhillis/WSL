@@ -2158,6 +2158,10 @@ __requires_lock_held(m_lock) void WSLCContainerImpl::Transition(WSLCContainerSta
 
     m_state = State;
     m_stateChangedAt = stateChangedAt.value_or(static_cast<std::uint64_t>(std::time(nullptr)));
+
+    // A container transitioning to a terminal state (e.g. Exited) may leave the session idle.
+    // Ask the session to re-evaluate whether the VM can be torn down. This is a non-blocking signal.
+    m_wslcSession.RequestIdleCheck();
 }
 
 WSLCContainer::WSLCContainer(WSLCContainerImpl* impl, WSLCSession& session, std::function<void(const WSLCContainerImpl*)>&& OnDeleted) :

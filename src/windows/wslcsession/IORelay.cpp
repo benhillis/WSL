@@ -68,6 +68,11 @@ void IORelay::Stop()
     }
 }
 
+bool IORelay::IsRelayThread() const noexcept
+{
+    return m_thread.get_id() == std::this_thread::get_id();
+}
+
 void IORelay::Run()
 try
 {

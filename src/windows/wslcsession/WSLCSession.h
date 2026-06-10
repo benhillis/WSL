@@ -22,7 +22,10 @@ Abstract:
 #include "DockerEventTracker.h"
 #include "DockerHTTPClient.h"
 #include "IORelay.h"
+#include <atomic>
 #include <list>
+#include <optional>
+#include <thread>
 #include <unordered_map>
 
 namespace wsl::windows::service::wslc {
@@ -100,6 +103,7 @@ public:
     IFACEMETHOD(GetState)(_Out_ WSLCSessionState* State) override;
     IFACEMETHOD(GetTerminationEvent)(_Out_ HANDLE* Event) override;
     IFACEMETHOD(GetTerminationReason)(_Out_ WSLCVirtualMachineTerminationReason* Reason, _Out_ LPWSTR* Details) override;
+    IFACEMETHOD(GetVmDiagnostics)(_Out_ WSLCVmDiagnostics* Diagnostics) override;
 
     // Image management.
     IFACEMETHOD(PullImage)(
@@ -218,8 +222,57 @@ public:
 
     bool WaitForEventOrSessionTerminating(HANDLE Event, std::chrono::milliseconds Timeout) const;
 
+    // Signals the idle worker to re-evaluate whether the VM can be torn down.
+    // Safe to call from any thread, including IO relay / container callbacks.
+    void RequestIdleCheck() noexcept;
+
 private:
     ULONG m_id = 0;
+
+    // VM lifecycle state for on-demand creation / idle termination.
+    enum class VmState
+    {
+        None,
+        Starting,
+        Running,
+        Stopping,
+    };
+
+    _Requires_exclusive_lock_held_(m_lock)
+    void StartVmLockHeld();
+    _Requires_exclusive_lock_held_(m_lock)
+    void StopVmLockHeld();
+    _Requires_exclusive_lock_held_(m_lock)
+    void TearDownVmLockHeld(bool CaptureTerminationReason = false);
+    _Requires_exclusive_lock_held_(m_lock)
+    bool HasActiveContainerLockHeld();
+    void EnsureVmRunning();
+    void IdleWorker();
+    bool IdleTerminationEnabled() const noexcept;
+    void PersistSettings(const WSLCSessionInitSettings& Settings, PSID UserSid);
+
+    // RAII lease taken at the top of every VM-requiring operation. On construction it
+    // ensures the VM is running and records an in-flight operation so idle teardown is
+    // deferred; it then holds the shared session lock for the operation's duration. On
+    // destruction it releases the lock and triggers an idle check.
+    class VmLease
+    {
+    public:
+        VmLease() = default;
+        explicit VmLease(WSLCSession& Session);
+        VmLease(VmLease&& Other) noexcept;
+        VmLease& operator=(VmLease&& Other) noexcept;
+        ~VmLease();
+
+        VmLease(const VmLease&) = delete;
+        VmLease& operator=(const VmLease&) = delete;
+
+    private:
+        WSLCSession* m_session{};
+        wil::rwlock_release_shared_scope_exit m_lock;
+    };
+
+    [[nodiscard]] VmLease AcquireVmLease();
 
     __requires_lock_held(m_userHandlesLock) void CancelUserHandleIO();
     __requires_lock_held(m_userCOMCallbacksLock) void CancelUserCOMCallbacks();
@@ -259,6 +312,7 @@ private:
     void StreamImageOperation(DockerHTTPClient::HTTPRequestContext& requestContext, LPCSTR Image, LPCSTR OperationName, IProgressCallback* ProgressCallback);
 
     std::optional<DockerHTTPClient> m_dockerClient;
+    wil::com_ptr<IWSLCVirtualMachineFactory> m_vmFactory;
     std::optional<WSLCVirtualMachine> m_virtualMachine;
     std::optional<DockerEventTracker> m_eventTracker;
     wil::unique_event m_dockerdReadyEvent{wil::EventOptions::ManualReset};
@@ -283,7 +337,26 @@ private:
     WSLCVirtualMachineTerminationReason m_terminationReason{WSLCVirtualMachineTerminationReasonUnknown};
     std::wstring m_terminationDetails;
     wil::srwlock m_lock;
-    IORelay m_ioRelay;
+    std::optional<IORelay> m_ioRelay;
+
+    // VM lifecycle / idle-termination state.
+    std::atomic<VmState> m_vmState{VmState::None};
+    std::atomic<int> m_activityCount{0};
+    std::atomic<bool> m_vmStopRequested{false};
+    // Number of times the VM has been (re)created; surfaced via GetVmDiagnostics.
+    std::atomic<ULONG> m_vmStartCount{0};
+    wil::unique_event m_idleCheckEvent{wil::EventOptions::ManualReset};
+    std::thread m_idleThread;
+
+    // Persisted settings required to (re)create the VM on demand. The string fields point
+    // into the owned storage members below (or m_displayName) so they remain valid for the
+    // lifetime of the session.
+    WSLCSessionInitSettings m_settings{};
+    std::optional<std::wstring> m_settingsCreatorProcessName;
+    std::optional<std::wstring> m_settingsStoragePath;
+    std::optional<std::string> m_settingsRootVhdTypeOverride;
+    std::vector<BYTE> m_userSid;
+
     std::optional<ServiceRunningProcess> m_containerdProcess;
     std::optional<ServiceRunningProcess> m_dockerdProcess;
     WSLCFeatureFlags m_featureFlags{};

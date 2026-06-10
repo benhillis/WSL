@@ -757,6 +757,18 @@ typedef enum _WSLCSessionState
     WSLCSessionStateTerminated = 1
 } WSLCSessionState;
 
+// Diagnostics describing the session's on-demand VM lifecycle. Used by tests and
+// troubleshooting to observe lazy VM bring-up and idle termination without affecting
+// the VM (querying these does not bring the VM up or count as activity).
+typedef struct _WSLCVmDiagnostics
+{
+    // TRUE when the backing VM is currently running.
+    boolean Running;
+
+    // Number of times the VM has been (re)created over the session's lifetime.
+    unsigned long StartCount;
+} WSLCVmDiagnostics;
+
 // Settings for IWSLCSession::Initialize - passed from service to per-user process
 typedef struct _WSLCSessionInitSettings
 {
@@ -791,6 +803,9 @@ interface IWSLCSession : IUnknown
     // Returns the cached termination reason and details. These are only available after the
     // termination event has been signaled; before that the call fails.
     HRESULT GetTerminationReason([out] WSLCVirtualMachineTerminationReason* Reason, [out] LPWSTR* Details);
+
+    // Reports on-demand VM lifecycle diagnostics. Does not bring the VM up or count as activity.
+    HRESULT GetVmDiagnostics([out] WSLCVmDiagnostics* Diagnostics);
 
     // Image management.
     HRESULT PullImage([in] LPCSTR Image, [in, unique] LPCSTR RegistryAuthenticationInformation, [in, unique] IProgressCallback* ProgressCallback, [in, unique] IWarningCallback* WarningCallback);
@@ -832,7 +847,9 @@ interface IWSLCSession : IUnknown
     // Returns a handle to this COM server process (used to add to job object).
     HRESULT GetProcessHandle([out, system_handle(sh_process)] HANDLE* ProcessHandle);
 
-    // Initializes the session with a VM factory. VMs are created through the factory.
+    // Initializes the session. The session creates VMs on demand via the supplied
+    // factory: a VM is brought up when work requires it and idle-terminated when there
+    // are no running containers and no in-flight operations.
     HRESULT Initialize(
         [in] const WSLCSessionInitSettings* Settings,
         [in] IWSLCVirtualMachineFactory* VmFactory,
