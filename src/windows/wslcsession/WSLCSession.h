@@ -145,6 +145,7 @@ public:
     // Container management.
     IFACEMETHOD(CreateContainer)(_In_ const WSLCContainerOptions* Options, _In_opt_ IWarningCallback* WarningCallback, _Out_ IWSLCContainer** Container) override;
     IFACEMETHOD(OpenContainer)(_In_ LPCSTR Id, _In_ IWSLCContainer** Container) override;
+    IFACEMETHOD(BeginContainerOperation)(_Outptr_ IUnknown** Operation) override;
     IFACEMETHOD(ListContainers)(
         _In_opt_ const WSLCListContainersOptions* Options,
         _Out_ WSLCContainerEntry** Containers,

@@ -966,11 +966,13 @@ ServiceRunningProcess WSLCSession::StartProcess(
 
     auto process = launcher.Launch(*m_virtualMachine);
 
-    m_ioRelay->AddHandle(std::make_unique<windows::common::io::LineBasedReadHandle>(
-        process.GetStdHandle(1), [this, LogSource](const auto& data) { OnProcessLog(data, LogSource); }, false));
+    m_ioRelay->AddHandle(
+        std::make_unique<windows::common::io::LineBasedReadHandle>(
+            process.GetStdHandle(1), [this, LogSource](const auto& data) { OnProcessLog(data, LogSource); }, false));
 
-    m_ioRelay->AddHandle(std::make_unique<windows::common::io::LineBasedReadHandle>(
-        process.GetStdHandle(2), [this, LogSource](const auto& data) { OnProcessLog(data, LogSource); }, false));
+    m_ioRelay->AddHandle(
+        std::make_unique<windows::common::io::LineBasedReadHandle>(
+            process.GetStdHandle(2), [this, LogSource](const auto& data) { OnProcessLog(data, LogSource); }, false));
 
     m_ioRelay->AddHandle(std::make_unique<windows::common::io::EventHandle>(process.GetExitEvent(), std::move(ExitCallback)));
 
@@ -1118,8 +1120,9 @@ void WSLCSession::StreamImageOperation(DockerHTTPClient::HTTPRequestContext& req
 
     auto onCompleted = [&]() { io.Cancel(); };
 
-    io.AddHandle(std::make_unique<DockerHTTPClient::DockerHttpResponseHandle>(
-        requestContext, std::move(onHttpResponse), std::move(onChunk), std::move(onCompleted)));
+    io.AddHandle(
+        std::make_unique<DockerHTTPClient::DockerHttpResponseHandle>(
+            requestContext, std::move(onHttpResponse), std::move(onChunk), std::move(onCompleted)));
 
     io.Run({});
 
@@ -1291,8 +1294,9 @@ try
 
     auto io = CreateIOContext();
 
-    io.AddHandle(std::make_unique<io::RelayHandle<io::ReadHandle>>(
-        buildFileHandle.Get(), common::io::HandleWrapper{buildProcess.GetStdHandle(WSLCFDStdin)}));
+    io.AddHandle(
+        std::make_unique<io::RelayHandle<io::ReadHandle>>(
+            buildFileHandle.Get(), common::io::HandleWrapper{buildProcess.GetStdHandle(WSLCFDStdin)}));
 
     bool verbose = WI_IsFlagSet(Options->Flags, WSLCBuildImageFlagsVerbose);
     std::string allOutput;
@@ -1661,8 +1665,10 @@ void WSLCSession::ImportImageImpl(DockerHTTPClient::HTTPRequestContext& Request,
         LOG_LAST_ERROR_IF(shutdown(socket, SD_SEND) == SOCKET_ERROR);
     };
 
-    io.AddHandle(std::make_unique<io::RelayHandle<io::ReadHandle>>(
-        common::io::HandleWrapper{userHandle.Get(), std::move(onInputComplete)}, common::io::HandleWrapper{Request.stream.native_handle()}));
+    io.AddHandle(
+        std::make_unique<io::RelayHandle<io::ReadHandle>>(
+            common::io::HandleWrapper{userHandle.Get(), std::move(onInputComplete)},
+            common::io::HandleWrapper{Request.stream.native_handle()}));
 
     io.AddHandle(
         std::make_unique<DockerHTTPClient::DockerHttpResponseHandle>(Request, std::move(onHttpResponse), std::move(onProgress)),
@@ -2331,6 +2337,73 @@ try
     THROW_HR_WITH_USER_ERROR_IF(WSLC_E_CONTAINER_NOT_FOUND, Localization::MessageWslcContainerNotFound(Id), result == RPC_E_DISCONNECTED);
 
     return result;
+}
+CATCH_RETURN();
+
+namespace {
+
+    // Activity token returned by WSLCSession::BeginContainerOperation. While a client holds it, the
+    // session's activity count is non-zero, so the idle worker will not tear the VM down. It runs a
+    // release callback (which holds a strong reference to the session and decrements the activity
+    // count) when the client releases it or exits. It implements IFastRundown so that if the
+    // holding client crashes, COM reclaims the stub promptly (rather than via slow default rundown)
+    // and the VM can idle-terminate without a multi-minute delay.
+    class ContainerOperation
+        : public Microsoft::WRL::RuntimeClass<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IUnknown, IFastRundown>
+    {
+    public:
+        // Adopts an activity-count reference already taken by BeginContainerOperation; the callback
+        // releases it.
+        void Initialize(std::function<void()>&& onRelease) noexcept
+        {
+            m_onRelease = std::move(onRelease);
+        }
+
+        ~ContainerOperation() override
+        {
+            if (m_onRelease)
+            {
+                m_onRelease();
+            }
+        }
+
+    private:
+        std::function<void()> m_onRelease;
+    };
+
+} // namespace
+
+HRESULT WSLCSession::BeginContainerOperation(IUnknown** Operation)
+try
+{
+    WSLCExecutionContext context(this);
+
+    RETURN_HR_IF_NULL(E_POINTER, Operation);
+    *Operation = nullptr;
+
+    // Record the in-flight operation up front so the VM cannot idle-terminate before the client
+    // resolves the container and issues the operation (and streams any output).
+    m_activityCount.fetch_add(1);
+    auto countCleanup = wil::scope_exit([this]() {
+        m_activityCount.fetch_sub(1);
+        RequestIdleCheck();
+    });
+
+    auto operation = Microsoft::WRL::Make<ContainerOperation>();
+    THROW_IF_NULL_ALLOC(operation.Get());
+
+    // Keep the session alive while the token is held so the release callback is always valid.
+    Microsoft::WRL::ComPtr<WSLCSession> self = this;
+    operation->Initialize([self = std::move(self)]() {
+        self->m_activityCount.fetch_sub(1);
+        self->RequestIdleCheck();
+    });
+
+    // The token now owns the activity-count reference and will release it on destruction.
+    countCleanup.release();
+
+    RETURN_IF_FAILED(operation.CopyTo(Operation));
+    return S_OK;
 }
 CATCH_RETURN();
 
@@ -3322,12 +3395,14 @@ MultiHandleWait WSLCSession::CreateIOContext(HANDLE CancelHandle)
     io::MultiHandleWait io;
 
     // Cancel with E_ABORT if the session is terminating.
-    io.AddHandle(std::make_unique<io::EventHandle>(
-        m_sessionTerminatingEvent.get(), [this]() { THROW_HR_MSG(E_ABORT, "Session %lu is terminating", m_id); }));
+    io.AddHandle(std::make_unique<io::EventHandle>(m_sessionTerminatingEvent.get(), [this]() {
+        THROW_HR_MSG(E_ABORT, "Session %lu is terminating", m_id);
+    }));
 
     // Cancel with E_ABORT if the client process exits.
-    io.AddHandle(std::make_unique<io::EventHandle>(
-        wslutil::OpenCallingProcess(SYNCHRONIZE), [this]() { THROW_HR_MSG(E_ABORT, "Client process has exited"); }));
+    io.AddHandle(std::make_unique<io::EventHandle>(wslutil::OpenCallingProcess(SYNCHRONIZE), [this]() {
+        THROW_HR_MSG(E_ABORT, "Client process has exited");
+    }));
 
     if (CancelHandle != nullptr)
     {
