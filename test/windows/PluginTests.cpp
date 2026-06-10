@@ -794,12 +794,18 @@ class PluginTests
 
     // --- PR #40120 (out-of-process plugin host) coverage ---
     //
-    // These tests validate the new isolation and locking behavior:
+    // These tests validate the isolation and callback model:
     //   * HostCrashIsFatal                — host process crash aborts the guarded operation (fatal).
-    //   * ConcurrentCallbacks             — concurrent shared_lock readers on m_callbackLock.
-    //   * AsyncApiCallFromWorker          — cross-apartment plugin API call from a non-hook thread.
-    //   * CallbacksDuringTerminationDoNotCrash — exclusive m_callbackLock drains in-flight
-    //                                        callbacks before m_utilityVm.reset().
+    //   * ConcurrentCallbacks             — many plugin threads issue API callbacks during a hook.
+    //   * AsyncApiCallFromWorker          — plugin API call from a worker thread OUTSIDE any hook.
+    //   * CallbacksDuringTerminationDoNotCrash — callbacks racing VM teardown fail gracefully, never crash.
+    //
+    // Callback model (PluginCallPump): a plugin API callback that arrives WHILE a
+    // notification hook is in flight is marshaled back onto the notifying thread
+    // (which holds the session's recursive m_instanceLock), reproducing in-process
+    // re-entrancy; a callback that arrives with no hook in flight runs directly on
+    // the RPC thread (taking m_instanceLock itself). There is no separate callback
+    // lock — m_instanceLock alone serializes callbacks against VM teardown.
 
     WSL2_TEST_METHOD(HostCrashIsFatal)
     {
@@ -892,18 +898,20 @@ class PluginTests
     {
         // Drain test: 4 workers loop ExecuteBinaryInDistribution (with /bin/true,
         // sub-ms callback) while the distro is alive. They keep calling across
-        // OnDistroStopping and _VmTerminate; the exclusive m_callbackLock acquire
-        // in _VmTerminate must drain in-flight callbacks before resetting
-        // m_utilityVm. After OnVmStopping signals wind-down, workers run a bounded
-        // number of further iterations and exit (see Plugin.cpp), so termination
-        // is deterministic and no worker can revive against a later VM.
+        // OnDistroStopping and _VmTerminate. Because callbacks run under (or block
+        // on) the session's recursive m_instanceLock, _VmTerminate's m_utilityVm
+        // reset is naturally serialized against them: a racing callback either
+        // runs before the reset (valid VM) or after it (returns E_NOT_VALID_STATE).
+        // Either way the service must not crash. After OnVmStopping signals
+        // wind-down, workers run a bounded number of further iterations and exit
+        // (see Plugin.cpp), so termination is deterministic and no worker can
+        // revive against a later VM.
         //
         // The post-shutdown StartWsl below triggers a second OnDistroStarted that
         // joins the finished workers, so this test needs no fixed sleep.
         //
         // Scope:
-        //   - Validates: dual-lock invariant under racing callbacks; drain works
-        //     when callbacks complete in sub-ms; service survives the race.
+        //   - Validates: callbacks racing teardown never crash; service survives.
         //   - Does NOT validate: drain semantics when a callback is genuinely
         //     stuck (e.g. service-side CreateLinuxProcess waiting on a hung
         //     Linux init). That requires cancellation plumbing through

@@ -241,17 +241,17 @@ HRESULT OnVmStarted(const WSLSessionInformation* Session, const WSLVmCreationSet
     }
     else if (g_testType == PluginTestType::ConcurrentApiCalls)
     {
-        // Validate concurrent service-side callbacks under the new
-        // m_callbackLock (shared_mutex). N threads call MountFolder +
-        // ExecuteBinary in parallel via a start-gate so the shared_lock has
-        // multiple readers in flight at once.
+        // Validate service-side callbacks issued by multiple plugin threads
+        // during a hook. N threads call MountFolder + ExecuteBinary via a
+        // start-gate so the RPCs are all in flight at once.
         //
         // maxConcurrent records how many workers are simultaneously at the
-        // callback boundary (via a second rendezvous). Reaching N proves the
-        // plugin issues N callbacks concurrently. It does NOT prove the service
-        // executes them in parallel — a black-box plugin can't observe whether
-        // m_callbackLock is shared or exclusive, since either way the RPCs
-        // simply appear in flight. This is the strongest honest assertion here.
+        // plugin-side callback boundary (via a second rendezvous). Reaching N
+        // proves the plugin issues N callbacks concurrently. It does NOT prove
+        // the service executes them in parallel: with the PluginCallPump the
+        // service marshals these onto the single notifying thread and runs them
+        // serially. The test asserts only that all N succeed, which is the
+        // strongest honest black-box assertion.
         constexpr int N = 4;
 
         std::filesystem::path modulePath = wil::GetModuleFileNameW(wil::GetModuleInstanceHandle()).get();
@@ -349,8 +349,8 @@ HRESULT OnVmStopping(const WSLSessionInformation* Session)
     if (g_testType == PluginTestType::CallbackDuringTermination)
     {
         // Signal drain workers to begin a bounded wind-down. Fires before
-        // _VmTerminate's exclusive m_callbackLock acquire, so workers keep
-        // racing the drain for a fixed number of iterations before exiting.
+        // _VmTerminate resets m_utilityVm, so workers keep racing teardown for
+        // a fixed number of iterations before exiting.
         g_drainWindDown = true;
     }
 
@@ -491,19 +491,20 @@ HRESULT OnDistroStarted(const WSLSessionInformation* Session, const WSLDistribut
     }
     else if (g_testType == PluginTestType::CallbackDuringTermination)
     {
-        // Validate that the new exclusive m_callbackLock acquire in
-        // _VmTerminate drains in-flight callbacks before m_utilityVm.reset().
+        // Validate that callbacks racing VM teardown never crash the service.
         // Workers keep calling into the service across OnDistroStopping /
-        // _VmTerminate, then wind down deterministically (see globals above).
+        // _VmTerminate; each callback runs under (or blocks on) the session's
+        // recursive m_instanceLock, so it is naturally serialized against
+        // m_utilityVm.reset() and fails gracefully if it lands after teardown.
+        // Workers then wind down deterministically (see globals above).
         //
-        // Scope: this test exercises only the *happy-path* drain — the
+        // Scope: this test exercises only the *happy-path* race — the
         // callback (/bin/true) returns in sub-millisecond, so workers are
-        // almost always between iterations when the exclusive lock is
-        // acquired. It is *not* a regression test for the hung-callback
-        // case, where a service-side callback is stuck inside CreateLinuxProcess
-        // waiting on a non-responsive Linux init; that scenario requires
-        // termination-event plumbing through WslCoreInstance::CreateLinuxProcess
-        // and is tracked separately.
+        // almost always between iterations when teardown runs. It is *not* a
+        // regression test for the hung-callback case, where a service-side
+        // callback is stuck inside CreateLinuxProcess waiting on a non-responsive
+        // Linux init; that scenario requires termination-event plumbing through
+        // WslCoreInstance::CreateLinuxProcess and is tracked separately.
         constexpr int N = 4;
 
         // Spawn at most once. The post-shutdown StartWsl in

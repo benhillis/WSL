@@ -27,6 +27,7 @@ Abstract:
 #include "WslPluginApi.h"
 #include "WslPluginHost.h"
 #include "wslc.h"
+#include "PluginCallPump.h"
 
 namespace wsl::windows::service {
 
@@ -160,6 +161,20 @@ public:
     // can no longer be opened.
     wil::com_ptr<IWSLCSession> ResolveWslcSession(ULONG SessionId);
 
+    // Routes a WSL-session plugin API callback (MountFolder / ExecuteBinary /
+    // ExecuteBinaryInDistribution) so it runs with in-process semantics. If a
+    // notification hook for SessionId is in flight, the work is marshaled onto
+    // the notifying thread (which holds the session's recursive m_instanceLock)
+    // via that hook's PluginCallPump — so out-of-process callbacks re-enter the
+    // lock exactly as in-process plugins did, and no second (m_callbackLock)
+    // lock is needed. Otherwise the work runs directly on the calling RPC thread
+    // (acquiring m_instanceLock itself via a timed try-acquire that re-checks for
+    // a pump on contention, so it can never deadlock against a notification
+    // thread that holds m_instanceLock and later waits for this callback). This
+    // supports plugin API calls made from a plugin's own worker threads outside
+    // any hook.
+    HRESULT InvokeOnWslPump(ULONG SessionId, std::function<HRESULT()> Work);
+
 private:
     struct OutOfProcPlugin
     {
@@ -245,6 +260,23 @@ private:
     // teardown hooks latch but cannot block, so they call LatchHostCrash + skip.
     [[noreturn]] void ThrowHostCrash(OutOfProcPlugin& plugin, HRESULT result, const char* stage);
 
+    // Registers/unregisters the active PluginCallPump for a WSL session while a
+    // notification (OnVmStarted, etc.) is in flight. Keyed by the session cookie
+    // that is handed to the plugin host and echoed back on callbacks. Plugin
+    // notifications for a given session are serialized by m_instanceLock, so at
+    // most one pump is registered per SessionId at a time.
+    void RegisterWslPump(ULONG SessionId, const std::shared_ptr<PluginCallPump>& Pump);
+    void UnregisterWslPump(ULONG SessionId);
+
+    // Drives one outbound plugin-host notification (OnVMStarted, etc.) through a
+    // PluginCallPump registered under SessionId. The pump runs `Notify` on a
+    // worker thread (which acquires the apartment-local host proxy and performs
+    // its own COM init) while THIS thread pumps the plugin's API callbacks — so
+    // they execute back here, under the session's recursive m_instanceLock.
+    // Returns the HRESULT from `Notify`, or the proxy-acquire failure (the
+    // caller routes it through IsHostCrash exactly as before).
+    HRESULT RunHostNotification(OutOfProcPlugin& Plugin, ULONG SessionId, const std::function<HRESULT(IWslPluginHost*)>& Notify);
+
     std::once_flag m_initOnce;
     std::vector<OutOfProcPlugin> m_plugins;
 
@@ -272,6 +304,16 @@ private:
     // rather than releasing them after CoUninitialize.
     std::mutex m_wslcSessionRefLock;
     std::unordered_map<ULONG, wil::com_ptr<IWSLCSessionReference>> m_wslcSessionRefs;
+
+    // Active WSL-session notification pumps, keyed by session cookie. Populated
+    // for the duration of an out-of-process notification call so that plugin API
+    // callbacks (which arrive on a different RPC thread) can be marshaled back
+    // onto the notifying thread. Held by shared_ptr so InvokeOnWslPump can copy
+    // out a stable reference under the lock and then release the lock before the
+    // (blocking) Invoke — the lock is never held across a callback. See
+    // InvokeOnWslPump.
+    wil::srwlock m_wslPumpLock;
+    _Guarded_by_(m_wslPumpLock) std::unordered_map<ULONG, std::shared_ptr<PluginCallPump>> m_wslPumps;
 };
 
 } // namespace wsl::windows::service
