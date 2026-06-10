@@ -20,6 +20,7 @@ struct Session : SessionT<Session>
 {
     Session() = default;
     Session(winrt::Microsoft::WSL::Containers::SessionSettings const& settings);
+    ~Session();
 
     void Start();
     void Terminate();
