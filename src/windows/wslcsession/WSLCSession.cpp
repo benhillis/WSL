@@ -40,6 +40,12 @@ constexpr auto c_dockerdReadyLogLine = "API listen on /var/run/docker.sock";
 constexpr DWORD c_processTerminateTimeoutMs = 30 * 1000;
 constexpr DWORD c_processKillTimeoutMs = 10 * 1000;
 
+// Grace period to keep an otherwise-idle VM running before tearing it down. This avoids
+// thrashing the VM (repeated teardown/recreate) when containers are created and destroyed,
+// or operations issued, in quick succession. The clock restarts whenever the VM is observed
+// to be non-idle, so a full grace period of continuous idleness is required before teardown.
+constexpr auto c_vmIdleGracePeriod = std::chrono::seconds(30);
+
 namespace {
 
 // Group policy: WSLContainerRegistryAllowlist restricts which container-image
@@ -655,16 +661,41 @@ void WSLCSession::IdleWorker()
 
     const HANDLE handles[] = {m_idleCheckEvent.get(), m_sessionTerminatingEvent.get()};
 
+    // Absolute time at which a continuously-idle VM becomes eligible for teardown. Unset while
+    // the VM is non-idle; (re)armed when the VM is first observed idle. The wait below times out
+    // at this deadline so teardown happens promptly once the grace period elapses.
+    std::optional<std::chrono::steady_clock::time_point> idleDeadline;
+
     for (;;)
     {
-        const auto wait = WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, INFINITE);
-        if (wait != WAIT_OBJECT_0)
+        DWORD timeout = INFINITE;
+        if (idleDeadline.has_value())
         {
-            // Session is terminating (or the wait failed) — exit the worker.
+            const auto now = std::chrono::steady_clock::now();
+            timeout = (*idleDeadline <= now)
+                          ? 0
+                          : static_cast<DWORD>(std::chrono::duration_cast<std::chrono::milliseconds>(*idleDeadline - now).count());
+        }
+
+        const auto wait = WaitForMultipleObjects(ARRAYSIZE(handles), handles, FALSE, timeout);
+
+        // handles[1] (session terminating) or a wait failure ends the worker. handles[0] (idle
+        // check) and WAIT_TIMEOUT (grace period may have elapsed) both trigger a re-evaluation.
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT)
+        {
             break;
         }
 
-        m_idleCheckEvent.ResetEvent();
+        if (wait == WAIT_OBJECT_0)
+        {
+            m_idleCheckEvent.ResetEvent();
+
+            // An explicit idle-check signal means an operation or container state change just
+            // completed (it is raised on every lease/token release and terminal state change).
+            // Restart the grace clock so teardown happens a full grace period after the last
+            // activity, not after the first time the VM was ever observed idle.
+            idleDeadline.reset();
+        }
 
         if (m_terminating.load())
         {
@@ -673,6 +704,7 @@ void WSLCSession::IdleWorker()
 
         if (!IdleTerminationEnabled())
         {
+            idleDeadline.reset();
             continue;
         }
 
@@ -682,6 +714,7 @@ void WSLCSession::IdleWorker()
 
             if (m_terminating.load() || m_vmState.load() != VmState::Running)
             {
+                idleDeadline.reset();
                 continue;
             }
 
@@ -693,15 +726,34 @@ void WSLCSession::IdleWorker()
             // path, whose Stop() self-join is a no-op and therefore cannot deadlock.
             if (m_vmExitedEvent && m_vmExitedEvent.is_signaled())
             {
+                idleDeadline.reset();
                 continue;
             }
 
-            // Keep the VM alive while any operation is in flight or any container is non-terminal.
+            // Keep the VM alive while any operation is in flight or any container is non-terminal,
+            // and restart the grace clock so a fresh idle period is required afterwards.
             if (m_activityCount.load() != 0 || HasActiveContainerLockHeld())
+            {
+                idleDeadline.reset();
+                continue;
+            }
+
+            // The VM is idle. Arm the grace period if the clock is not already running, then
+            // defer teardown until it has fully elapsed. The clock is reset by any non-idle
+            // observation or explicit idle-check signal (see the WAIT_OBJECT_0 handling above),
+            // so a WAIT_TIMEOUT wake here means the VM has been idle for the whole grace period.
+            const auto now = std::chrono::steady_clock::now();
+            if (!idleDeadline.has_value())
+            {
+                idleDeadline = now + c_vmIdleGracePeriod;
+            }
+
+            if (now < *idleDeadline)
             {
                 continue;
             }
 
+            idleDeadline.reset();
             StopVmLockHeld();
         }
         CATCH_LOG();
