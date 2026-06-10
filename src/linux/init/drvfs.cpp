@@ -690,8 +690,9 @@ try
     }
 
     std::string_view SubnameView{Subname};
-    if (SubnameView.size() != 32 ||
-        !std::all_of(SubnameView.begin(), SubnameView.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+    if (SubnameView.size() != 32 || !std::all_of(SubnameView.begin(), SubnameView.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }))
     {
         LOG_ERROR("Invalid virtiofs aggregate subname {}", Subname);
         errno = EINVAL;
