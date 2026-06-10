@@ -2307,6 +2307,11 @@ try
     THROW_HR_IF_MSG(E_INVALIDARG, WI_IsAnyFlagSet(Flags, ~WSLCDeleteFlagsValid), "Invalid flags: 0x%x", Flags);
 
     // Special case for Delete(): If deletion is successful, notify the WSLCSession that the container has been deleted.
+    // Hold a VM lease across the whole operation: deleting a container makes it inactive and
+    // can trigger an idle teardown. Without the lease the idle worker could take the session
+    // lock exclusively and clear m_containers (destroying this container) concurrently, racing
+    // the delete and inverting the container->session lock order.
+    auto vmLease = m_session.AcquireVmLease();
     auto [lock, impl] = LockImpl();
 
     impl->Delete(Flags);

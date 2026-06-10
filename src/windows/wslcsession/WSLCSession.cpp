@@ -299,7 +299,7 @@ HRESULT WSLCSession::Initialize(
 try
 {
     RETURN_HR_IF(E_POINTER, Settings == nullptr || VmFactory == nullptr);
-    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED), m_vmFactory != nullptr);
+    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED), m_vmFactoryGitCookie != 0);
 
     THROW_HR_IF_MSG(
         E_INVALIDARG, WI_IsAnyFlagSet(Settings->FeatureFlags, ~WSLCFeatureFlagsValid), "Invalid feature flags: 0x%x", Settings->FeatureFlags);
@@ -319,7 +319,12 @@ try
     m_creatorProcessName = Settings->CreatorProcessName ? Settings->CreatorProcessName : L"";
     m_featureFlags = Settings->FeatureFlags;
     m_pluginNotifier = PluginNotifier;
-    m_vmFactory = VmFactory;
+
+    // Park the VM factory in the Global Interface Table. It is supplied here (on the call that
+    // creates the session) but used on demand from other threads/apartments; storing the raw
+    // proxy and calling it later would raise RPC_E_WRONG_THREAD.
+    m_git = wil::CoCreateInstance<IGlobalInterfaceTable>(CLSID_StdGlobalInterfaceTable, CLSCTX_INPROC_SERVER);
+    THROW_IF_FAILED(m_git->RegisterInterfaceInGlobal(VmFactory, __uuidof(IWSLCVirtualMachineFactory), &m_vmFactoryGitCookie));
 
     // Persist a deep copy of the settings (and the creating user's SID) required to
     // (re)create the VM on demand.
@@ -437,10 +442,15 @@ void WSLCSession::StartVmLockHeld()
     // during teardown and cannot be restarted.
     m_ioRelay.emplace();
 
-    // Create the VM via the factory. The VM produces crash events; the session multiplexes them
-    // out to any registered ICrashDumpCallback subscribers via OnCrashDumpWritten.
+    // Create the VM via the factory. Re-fetch the factory from the GIT so we call it through a
+    // proxy marshalled into this thread's apartment (see m_git). The VM produces crash events;
+    // the session multiplexes them out to any registered ICrashDumpCallback subscribers via
+    // OnCrashDumpWritten.
+    wil::com_ptr<IWSLCVirtualMachineFactory> vmFactory;
+    THROW_IF_FAILED(m_git->GetInterfaceFromGlobal(m_vmFactoryGitCookie, __uuidof(IWSLCVirtualMachineFactory), vmFactory.put_void()));
+
     wil::com_ptr<IWSLCVirtualMachine> vm;
-    THROW_IF_FAILED(m_vmFactory->CreateVirtualMachine(&vm));
+    THROW_IF_FAILED(vmFactory->CreateVirtualMachine(&vm));
 
     m_virtualMachine.emplace(
         vm.get(),
@@ -639,6 +649,10 @@ void WSLCSession::RequestIdleCheck() noexcept
 
 void WSLCSession::IdleWorker()
 {
+    // Idle teardown releases cross-process COM proxies (the VM and its VM-scoped state), so this
+    // thread must join the process MTA; otherwise those Release/calls fail with RPC_E_WRONG_THREAD.
+    const auto coInit = wil::CoInitializeEx(COINIT_MULTITHREADED);
+
     const HANDLE handles[] = {m_idleCheckEvent.get(), m_sessionTerminatingEvent.get()};
 
     for (;;)
@@ -3123,6 +3137,14 @@ try
         m_idleThread.join();
     }
 
+    // The idle worker has exited and no operation can run past m_terminated, so the parked VM
+    // factory can no longer be re-fetched; revoke it from the GIT.
+    if (m_vmFactoryGitCookie != 0)
+    {
+        LOG_IF_FAILED(m_git->RevokeInterfaceFromGlobal(m_vmFactoryGitCookie));
+        m_vmFactoryGitCookie = 0;
+    }
+
     return S_OK;
 }
 CATCH_RETURN();
@@ -3410,9 +3432,11 @@ void WSLCSession::CancelUserCOMCallbacks()
 
 void WSLCSession::OnContainerDeleted(const WSLCContainerImpl* Container)
 {
-    // N.B. This is an internal callback (invoked while a container is being deleted); it must
-    // not bring up the VM via AcquireVmLease(). It only removes bookkeeping under the shared lock.
-    auto lock = m_lock.lock_shared();
+    // N.B. Invoked only from WSLCContainer::Delete, which already holds a VmLease (the shared
+    // session lock). The lease prevents a concurrent idle teardown from clearing m_containers,
+    // so this only needs m_containersLock. It must NOT re-acquire the shared session lock here:
+    // doing so while the idle worker is queued for the exclusive lock would deadlock (recursive
+    // shared acquire behind a pending writer).
     std::lock_guard containersLock(m_containersLock);
 
     WI_VERIFY(m_containers.erase(Container->ID()) == 1);

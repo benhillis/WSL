@@ -78,6 +78,10 @@ private:
 class DECLSPEC_UUID("4877FEFC-4977-4929-A958-9F36AA1892A4") WSLCSession
     : public Microsoft::WRL::RuntimeClass<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::WinRtClassicComMix>, IWSLCSession, IFastRundown, ISupportErrorInfo>
 {
+    // WSLCContainer::Delete acquires a VmLease to keep the VM alive (and block idle
+    // teardown) for the duration of a container deletion.
+    friend class WSLCContainer;
+
 public:
     WSLCSession() = default;
 
@@ -312,7 +316,14 @@ private:
     void StreamImageOperation(DockerHTTPClient::HTTPRequestContext& requestContext, LPCSTR Image, LPCSTR OperationName, IProgressCallback* ProgressCallback);
 
     std::optional<DockerHTTPClient> m_dockerClient;
-    wil::com_ptr<IWSLCVirtualMachineFactory> m_vmFactory;
+
+    // The VM factory is a cross-process proxy supplied by the SYSTEM service at Initialize() time
+    // but first used later (on demand) from a different thread/apartment. A directly stored proxy
+    // would fail with RPC_E_WRONG_THREAD, so it is parked in the process Global Interface Table and
+    // re-fetched (re-marshalled into the calling apartment) each time a VM is created.
+    wil::com_ptr<IGlobalInterfaceTable> m_git;
+    DWORD m_vmFactoryGitCookie{};
+
     std::optional<WSLCVirtualMachine> m_virtualMachine;
     std::optional<DockerEventTracker> m_eventTracker;
     wil::unique_event m_dockerdReadyEvent{wil::EventOptions::ManualReset};
