@@ -20,6 +20,7 @@ Abstract:
 #include "windows/Common.h"
 #include "WSLCExecutor.h"
 #include "WSLCE2EHelpers.h"
+#include <WSLCProcessLauncher.h>
 
 namespace WSLCE2ETests {
 using namespace wsl::shared;
@@ -114,13 +115,39 @@ class WSLCE2EVmIdleTests
         VERIFY_IS_TRUE(static_cast<bool>(QueryDiagnostics(session).Running));
 
         // Removing the only container drops the active count to zero and the VM idles.
-        RunWslcAndVerify(
-            std::format(L"container rm --session {} {}", session.Name(), containerName), {.Stderr = L"", .ExitCode = 0});
+        RunWslcAndVerify(std::format(L"container rm --session {} {}", session.Name(), containerName), {.Stderr = L"", .ExitCode = 0});
 
         WaitForVmRunningState(session, false);
     }
 
-    // Stress the lease-vs-idle-teardown race: each run idles the VM, and the next run's lease
+    // A long-lived root-namespace process (created via CreateRootNamespaceProcess) is not tracked
+    // as a container, so it does not contribute to the active-container check. It must nonetheless
+    // keep the VM alive for as long as the client holds the returned process, via the activity
+    // token bound to the process's lifetime. Without that token the idle worker would tear the VM
+    // down once the grace period elapsed, killing the process out from under the client.
+    WSLC_TEST_METHOD(WSLCE2E_VmIdle_RootProcessKeepsVmAlive)
+    {
+        auto session = TestSession::Create(L"wslc-vmidle-rootproc");
+
+        // Launch a long-running root-namespace process and keep the returned process object alive.
+        // This brings the VM up on demand to host the process.
+        wsl::windows::common::WSLCProcessLauncher launcher("/bin/sleep", {"/bin/sleep", "3600"});
+        std::optional<wsl::windows::common::ClientRunningWSLCProcess> process = launcher.Launch(*session.Session());
+
+        WaitForVmRunningState(session, true);
+
+        // The VM must remain running past the idle grace period (30s) while the process is held,
+        // even though there are no containers and no in-flight operations. Without the keep-alive
+        // token the idle worker would have torn the VM down ~30s after the creating call returned,
+        // so a generous margin past the grace period reliably catches that regression.
+        std::this_thread::sleep_for(std::chrono::seconds(40));
+        VERIFY_IS_TRUE(static_cast<bool>(QueryDiagnostics(session).Running));
+
+        // Releasing the process proxy drops the activity count to zero and the VM idle-terminates.
+        process.reset();
+        WaitForVmRunningState(session, false);
+    }
+
     // arrives while teardown may still be in flight. All operations must succeed (no spurious
     // ERROR_INVALID_STATE from racing a VM that is stopping).
     WSLC_TEST_METHOD(WSLCE2E_VmIdle_ConcurrentRecreateDoesNotFail)

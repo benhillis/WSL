@@ -647,9 +647,9 @@ bool WSLCSession::HasActiveContainerLockHeld()
 
 void WSLCSession::RequestIdleCheck() noexcept
 {
-    if (m_idleCheckEvent)
+    if (m_idleState->IdleCheckEvent)
     {
-        m_idleCheckEvent.SetEvent();
+        m_idleState->IdleCheckEvent.SetEvent();
     }
 }
 
@@ -659,7 +659,7 @@ void WSLCSession::IdleWorker()
     // thread must join the process MTA; otherwise those Release/calls fail with RPC_E_WRONG_THREAD.
     const auto coInit = wil::CoInitializeEx(COINIT_MULTITHREADED);
 
-    const HANDLE handles[] = {m_idleCheckEvent.get(), m_sessionTerminatingEvent.get()};
+    const HANDLE handles[] = {m_idleState->IdleCheckEvent.get(), m_sessionTerminatingEvent.get()};
 
     // Absolute time at which a continuously-idle VM becomes eligible for teardown. Unset while
     // the VM is non-idle; (re)armed when the VM is first observed idle. The wait below times out
@@ -688,7 +688,7 @@ void WSLCSession::IdleWorker()
 
         if (wait == WAIT_OBJECT_0)
         {
-            m_idleCheckEvent.ResetEvent();
+            m_idleState->IdleCheckEvent.ResetEvent();
 
             // An explicit idle-check signal means an operation or container state change just
             // completed (it is raised on every lease/token release and terminal state change).
@@ -732,7 +732,7 @@ void WSLCSession::IdleWorker()
 
             // Keep the VM alive while any operation is in flight or any container is non-terminal,
             // and restart the grace clock so a fresh idle period is required afterwards.
-            if (m_activityCount.load() != 0 || HasActiveContainerLockHeld())
+            if (m_idleState->ActivityCount.load() != 0 || HasActiveContainerLockHeld())
             {
                 idleDeadline.reset();
                 continue;
@@ -769,10 +769,10 @@ WSLCSession::VmLease::VmLease(WSLCSession& Session) : m_session(&Session)
 {
     // Record an in-flight operation before bringing the VM up so the idle worker cannot tear
     // it down between EnsureVmRunning() and acquiring the shared lock.
-    m_session->m_activityCount.fetch_add(1);
+    m_session->m_idleState->ActivityCount.fetch_add(1);
 
     auto countCleanup = wil::scope_exit([this]() {
-        m_session->m_activityCount.fetch_sub(1);
+        m_session->m_idleState->ActivityCount.fetch_sub(1);
         m_session = nullptr;
     });
 
@@ -811,7 +811,7 @@ WSLCSession::VmLease& WSLCSession::VmLease::operator=(VmLease&& Other) noexcept
         if (m_session != nullptr)
         {
             m_lock.reset();
-            m_session->m_activityCount.fetch_sub(1);
+            m_session->m_idleState->ActivityCount.fetch_sub(1);
             m_session->RequestIdleCheck();
         }
 
@@ -829,7 +829,7 @@ WSLCSession::VmLease::~VmLease()
         // Release the shared lock before triggering the idle check so the idle worker can
         // immediately take the exclusive lock if the session is now idle.
         m_lock.reset();
-        m_session->m_activityCount.fetch_sub(1);
+        m_session->m_idleState->ActivityCount.fetch_sub(1);
         m_session->RequestIdleCheck();
     }
 }
@@ -2394,17 +2394,19 @@ CATCH_RETURN();
 
 namespace {
 
-    // Activity token returned by WSLCSession::BeginContainerOperation. While a client holds it, the
-    // session's activity count is non-zero, so the idle worker will not tear the VM down. It runs a
-    // release callback (which holds a strong reference to the session and decrements the activity
-    // count) when the client releases it or exits. It implements IFastRundown so that if the
-    // holding client crashes, COM reclaims the stub promptly (rather than via slow default rundown)
-    // and the VM can idle-terminate without a multi-minute delay.
+    // Activity token created by WSLCSession::CreateActivityToken (returned directly by
+    // BeginContainerOperation, and bound to a root-namespace process's lifetime by
+    // CreateRootNamespaceProcess). While a client holds it, the session's activity count is
+    // non-zero, so the idle worker will not tear the VM down. It runs a release callback (which
+    // decrements the activity count via the shared IdleState, without keeping the session alive)
+    // when the client releases it or exits. It implements IFastRundown so that if the holding
+    // client crashes, COM reclaims the stub promptly (rather than via slow default rundown) and the
+    // VM can idle-terminate without a multi-minute delay.
     class ContainerOperation
         : public Microsoft::WRL::RuntimeClass<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IUnknown, IFastRundown>
     {
     public:
-        // Adopts an activity-count reference already taken by BeginContainerOperation; the callback
+        // Adopts an activity-count reference already taken by CreateActivityToken; the callback
         // releases it.
         void Initialize(std::function<void()>&& onRelease) noexcept
         {
@@ -2425,6 +2427,38 @@ namespace {
 
 } // namespace
 
+Microsoft::WRL::ComPtr<IUnknown> WSLCSession::CreateActivityToken()
+{
+    // Record the in-flight activity up front so the VM cannot idle-terminate before the caller
+    // takes ownership of the returned token.
+    m_idleState->ActivityCount.fetch_add(1);
+    auto countCleanup = wil::scope_exit([this]() {
+        m_idleState->ActivityCount.fetch_sub(1);
+        RequestIdleCheck();
+    });
+
+    auto operation = Microsoft::WRL::Make<ContainerOperation>();
+    THROW_IF_NULL_ALLOC(operation.Get());
+
+    // Capture the shared idle state rather than the session itself: the token may outlive the
+    // session (e.g. a client keeps a root-namespace process proxy past releasing the session), and
+    // it must not keep the session alive. On release it decrements the activity count and wakes the
+    // idle worker; if the session is already gone this is a harmless no-op (no idle worker waits on
+    // the event). N.B. releasing the token therefore never blocks an explicit session teardown.
+    std::shared_ptr<IdleState> idleState = m_idleState;
+    operation->Initialize([idleState = std::move(idleState)]() {
+        idleState->ActivityCount.fetch_sub(1);
+        idleState->IdleCheckEvent.SetEvent();
+    });
+
+    // The token now owns the activity-count reference and will release it on destruction.
+    countCleanup.release();
+
+    Microsoft::WRL::ComPtr<IUnknown> token;
+    THROW_IF_FAILED(operation.As(&token));
+    return token;
+}
+
 HRESULT WSLCSession::BeginContainerOperation(IUnknown** Operation)
 try
 {
@@ -2435,26 +2469,9 @@ try
 
     // Record the in-flight operation up front so the VM cannot idle-terminate before the client
     // resolves the container and issues the operation (and streams any output).
-    m_activityCount.fetch_add(1);
-    auto countCleanup = wil::scope_exit([this]() {
-        m_activityCount.fetch_sub(1);
-        RequestIdleCheck();
-    });
+    auto token = CreateActivityToken();
 
-    auto operation = Microsoft::WRL::Make<ContainerOperation>();
-    THROW_IF_NULL_ALLOC(operation.Get());
-
-    // Keep the session alive while the token is held so the release callback is always valid.
-    Microsoft::WRL::ComPtr<WSLCSession> self = this;
-    operation->Initialize([self = std::move(self)]() {
-        self->m_activityCount.fetch_sub(1);
-        self->RequestIdleCheck();
-    });
-
-    // The token now owns the activity-count reference and will release it on destruction.
-    countCleanup.release();
-
-    RETURN_IF_FAILED(operation.CopyTo(Operation));
+    RETURN_IF_FAILED(token.CopyTo(Operation));
     return S_OK;
 }
 CATCH_RETURN();
@@ -2647,6 +2664,14 @@ try
     THROW_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_STATE), !m_virtualMachine);
 
     auto process = m_virtualMachine->CreateLinuxProcess(Executable, *Options, TtyRows, TtyColumns, Errno);
+
+    // The VmLease above is released when this call returns, but the process keeps running in the
+    // VM and the client holds the returned proxy. A root-namespace process is not tracked as a
+    // container, so attach an activity token bound to the process's lifetime; this keeps the VM
+    // alive for as long as the client holds the process, preventing the idle worker from tearing
+    // the VM down and killing the process out from under the client.
+    process->SetKeepAliveToken(CreateActivityToken());
+
     THROW_IF_FAILED(process.CopyTo(Process));
 
     return S_OK;

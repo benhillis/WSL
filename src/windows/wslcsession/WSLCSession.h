@@ -243,6 +243,17 @@ private:
         Stopping,
     };
 
+    // Idle-activity state shared between the session and any outstanding activity tokens. Held via
+    // shared_ptr so a token can outlive the session (e.g. a client keeps a root-namespace process
+    // proxy past releasing the session) and still safely release its activity reference without
+    // keeping the session object alive. Tearing down the session therefore proceeds normally; a
+    // late token release simply decrements the count and signals an event with no waiter.
+    struct IdleState
+    {
+        std::atomic<int> ActivityCount{0};
+        wil::unique_event IdleCheckEvent{wil::EventOptions::ManualReset};
+    };
+
     _Requires_exclusive_lock_held_(m_lock)
     void StartVmLockHeld();
     _Requires_exclusive_lock_held_(m_lock)
@@ -252,6 +263,13 @@ private:
     _Requires_exclusive_lock_held_(m_lock)
     bool HasActiveContainerLockHeld();
     void EnsureVmRunning();
+
+    // Creates an opaque activity token that holds a reference on this session's activity count for
+    // its lifetime, deferring idle teardown of the VM until every outstanding token is released.
+    // Used both for transient client operations (BeginContainerOperation) and to keep the VM alive
+    // for the lifetime of a root-namespace process.
+    Microsoft::WRL::ComPtr<IUnknown> CreateActivityToken();
+
     void IdleWorker();
     bool IdleTerminationEnabled() const noexcept;
     void PersistSettings(const WSLCSessionInitSettings& Settings, PSID UserSid);
@@ -353,11 +371,12 @@ private:
 
     // VM lifecycle / idle-termination state.
     std::atomic<VmState> m_vmState{VmState::None};
-    std::atomic<int> m_activityCount{0};
     std::atomic<bool> m_vmStopRequested{false};
     // Number of times the VM has been (re)created; surfaced via GetVmDiagnostics.
     std::atomic<ULONG> m_vmStartCount{0};
-    wil::unique_event m_idleCheckEvent{wil::EventOptions::ManualReset};
+    // In-flight activity count and idle-worker wake event, decoupled from this object's lifetime
+    // (see IdleState) so activity tokens never extend the session's lifetime.
+    std::shared_ptr<IdleState> m_idleState{std::make_shared<IdleState>()};
     std::thread m_idleThread;
 
     // Persisted settings required to (re)create the VM on demand. The string fields point
