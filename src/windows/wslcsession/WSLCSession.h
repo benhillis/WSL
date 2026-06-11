@@ -73,7 +73,8 @@ private:
 //
 // WSLCSession - Implements IWSLCSession for container management.
 // Runs in a per-user COM server process for security isolation.
-// The SYSTEM service creates the VM and passes IWSLCVirtualMachine to Initialize().
+// The SYSTEM service passes an IWSLCVirtualMachineFactory to Initialize(); the VM is created
+// lazily on first use and may be torn down when idle and recreated on demand.
 //
 class DECLSPEC_UUID("4877FEFC-4977-4929-A958-9F36AA1892A4") WSLCSession
     : public Microsoft::WRL::RuntimeClass<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::WinRtClassicComMix>, IWSLCSession, IFastRundown, ISupportErrorInfo>
