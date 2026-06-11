@@ -3258,9 +3258,6 @@ try
     // Acquire an exclusive lock to ensure that no operation is running.
     WI_VERIFY(sessionLock);
 
-    // Acquire an exclusive lock to ensure that no operation is running.
-    WI_VERIFY(sessionLock);
-
     // Tear down the VM (if running) and all VM-scoped state, capturing the termination reason.
     // This mirrors the soft teardown used for idle shutdown, but here it is permanent.
     TearDownVmLockHeld(/* CaptureTerminationReason */ true);
@@ -3281,7 +3278,7 @@ try
         m_idleThread.join();
     }
 
-    // The idle worker has exited and no operation can run past m_terminated, so the parked VM
+    // The idle worker has exited and no operation can run past termination, so the parked VM
     // factory can no longer be re-fetched; revoke it from the GIT.
     if (m_vmFactoryGitCookie != 0)
     {
