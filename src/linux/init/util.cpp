@@ -3631,6 +3631,13 @@ try
 
             double MemoryLow = 1024 * 1024 * 1024;
             double MemoryHigh = 1.1 * 1024.0 * 1024.0 * 1024.0;
+
+            // In DropCache mode, re-drop the page cache once memory in use has grown by at least this
+            // much since the last drop while the VM remains idle. This prevents long-lived background
+            // daemons (e.g. dockerd/containerd) from slowly refilling the page cache on a VM that stays
+            // idle for a long time without it ever being reclaimed.
+            constexpr double MemoryDropGrowthThreshold = 256.0 * 1024.0 * 1024.0;
+            double MemoryAtLastDrop = 0;
             const int IdleThreshold = get_nprocs(); // Change math to adjust if sysconf(_SC_CLK_TCK) != 100? Is 1%
             long long int Start, Stop = 0;
             auto constexpr SleepDuration = std::chrono::seconds(30);
@@ -3701,10 +3708,27 @@ try
                                 }
                             }
                         }
-                        else if (!ReclaimIdling)
+                        else
                         {
-                            ReclaimIdling = true;
-                            THROW_LAST_ERROR_IF(WriteToFile("/proc/sys/vm/drop_caches", "1\n") < 0);
+                            //
+                            // DropCache mode: drop the page cache when first transitioning to idle, and
+                            // again whenever memory in use has grown by at least MemoryDropGrowthThreshold
+                            // since the last drop while the VM is still idle. Re-arming on growth (rather
+                            // than dropping only once per idle transition) ensures a VM that stays idle for
+                            // a long time keeps returning page cache that background daemons accumulate.
+                            //
+
+                            double MemorySize = GetMemoryInUse();
+                            THROW_LAST_ERROR_IF(MemorySize < 0);
+
+                            if (!ReclaimIdling || MemorySize > MemoryAtLastDrop + MemoryDropGrowthThreshold)
+                            {
+                                ReclaimIdling = true;
+                                THROW_LAST_ERROR_IF(WriteToFile("/proc/sys/vm/drop_caches", "1\n") < 0);
+
+                                MemoryAtLastDrop = GetMemoryInUse();
+                                THROW_LAST_ERROR_IF(MemoryAtLastDrop < 0);
+                            }
                         }
                     }
                     else
