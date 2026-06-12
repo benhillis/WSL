@@ -319,6 +319,20 @@ try
     // failures are streamed to the CLI.
     WSLCExecutionContext warningContext(this, WarningCallback);
 
+    // The VM (and storage VHD) is created lazily on the first operation. Validate the storage
+    // configuration eagerly here so misconfiguration is reported at session creation rather than
+    // surfacing later on the first VM-starting operation. With WSLCSessionStorageFlagsNoCreate the
+    // storage VHD must already exist (ConfigureStorage will not create it).
+    if (Settings->StoragePath != nullptr && WI_IsFlagSet(Settings->StorageFlags, WSLCSessionStorageFlagsNoCreate))
+    {
+        const std::filesystem::path storagePath{Settings->StoragePath};
+        THROW_HR_WITH_USER_ERROR_IF(E_INVALIDARG, Localization::MessagePathNotAbsolute(Settings->StoragePath), !storagePath.is_absolute());
+        THROW_HR_WITH_USER_ERROR_IF(
+            HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND),
+            Localization::MessageWslcSessionStorageNotFound(Settings->StoragePath),
+            !std::filesystem::exists(storagePath / "storage.vhdx"));
+    }
+
     // N.B. No locking is required because Initialize() is always called before the session is returned to the caller.
     m_id = Settings->SessionId;
     m_displayName = Settings->DisplayName ? Settings->DisplayName : L"";
@@ -718,8 +732,19 @@ void WSLCSession::IdleWorker()
 
         try
         {
-            auto lock = m_lock.lock_exclusive();
-
+            // Use a non-blocking acquire. A blocking exclusive acquire would queue behind any
+            // in-flight operation's shared VmLease and, because SRW locks favor a waiting writer,
+            // would stall every new operation behind it until that operation completed. A
+            // long-running operation (e.g. a blocking SaveImage/Export) would therefore serialize
+            // all concurrent operations. If the lock is currently held an operation is in flight,
+            // so treat it as activity and re-evaluate on the next idle-check signal (raised when
+            // that operation releases its lease).
+            auto lock = m_lock.try_lock_exclusive();
+            if (!lock)
+            {
+                idleDeadline.reset();
+                continue;
+            }
             if (m_terminating.load() || m_vmState.load() != VmState::Running)
             {
                 idleDeadline.reset();
