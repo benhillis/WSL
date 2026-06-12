@@ -800,8 +800,9 @@ interface IWSLCSession : IUnknown
     // caller and remains valid (and observes the signaled state) even after the session is released.
     HRESULT GetTerminationEvent([out, system_handle(sh_event)] HANDLE* Event);
 
-    // Returns the cached termination reason and details. These are only available after the
-    // termination event has been signaled; before that the call fails.
+    // Returns the cached termination reason and details. Only valid once the session has terminated,
+    // i.e. after the event returned by GetTerminationEvent is signaled; before that it returns
+    // HRESULT_FROM_WIN32(ERROR_INVALID_STATE). On success the caller owns Details and must free it.
     HRESULT GetTerminationReason([out] WSLCVirtualMachineTerminationReason* Reason, [out] LPWSTR* Details);
 
     // Reports on-demand VM lifecycle diagnostics. Does not bring the VM up or count as activity.
