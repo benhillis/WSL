@@ -148,6 +148,49 @@ class WSLCE2EVmIdleTests
         WaitForVmRunningState(session, false);
     }
 
+    // A client may hold a proxy to a container that has exited and is therefore no longer "active"
+    // by state. Tearing the VM down would disconnect that proxy (leaving the client with
+    // RPC_E_DISCONNECTED), so the idle worker must keep the VM alive while any container proxy is
+    // outstanding -- and reclaim it promptly once the client releases the proxy. This is the
+    // container analogue of the root-process keep-alive above.
+    WSLC_TEST_METHOD(WSLCE2E_VmIdle_HeldContainerProxyKeepsVmAlive)
+    {
+        auto session = TestSession::Create(L"wslc-vmidle-heldcontainer");
+
+        EnsureImageIsLoaded(AlpineImage, session.Name());
+
+        // Launch a container that exits almost immediately, then keep the returned proxy. Once it has
+        // exited it no longer counts as active by state, so only the held proxy can keep the VM up.
+        wsl::windows::common::WSLCContainerLauncher launcher(
+            wsl::shared::string::WideToMultiByte(AlpineImage.NameAndTag()),
+            "wslc-vmidle-heldcontainer",
+            {"/bin/true"},
+            {},
+            "none");
+
+        std::optional<wsl::windows::common::RunningWSLCContainer> container = launcher.Launch(*session.Session(), WSLCContainerStartFlagsNone);
+
+        // Exercise the pure proxy-release path (not container deletion) as the trigger for teardown.
+        container->SetDeleteOnClose(false);
+
+        // Wait for the container to exit so it no longer keeps the VM alive by being Created/Running.
+        retry::RetryWithTimeout<void>(
+            [&]() { THROW_HR_IF(E_FAIL, container->State() != WslcContainerStateExited); },
+            std::chrono::milliseconds(250),
+            std::chrono::seconds(60));
+
+        // The VM must remain running well past the idle grace period (30s) while the exited
+        // container's proxy is held. Without the pin the idle worker would tear the VM down ~30s
+        // after the launch returned, so a generous margin past the grace period catches that
+        // regression reliably.
+        std::this_thread::sleep_for(std::chrono::seconds(40));
+        VERIFY_IS_TRUE(static_cast<bool>(QueryDiagnostics(session).Running));
+
+        // Releasing the container proxy drops the last external reference and the VM idle-terminates.
+        container.reset();
+        WaitForVmRunningState(session, false);
+    }
+
     // arrives while teardown may still be in flight. All operations must succeed (no spurious
     // ERROR_INVALID_STATE from racing a VM that is stopping).
     WSLC_TEST_METHOD(WSLCE2E_VmIdle_ConcurrentRecreateDoesNotFail)

@@ -669,10 +669,18 @@ bool WSLCSession::HasActiveContainerLockHeld()
     std::lock_guard containersLock(m_containersLock);
 
     // A container in the Created or Running state keeps the VM alive (it is non-terminal and
-    // may still be started/used). Exited containers do not.
+    // may still be started/used). Exited containers do not -- unless a client still holds a proxy
+    // to the container's COM wrapper, in which case tearing the VM down would disconnect that proxy
+    // (RPC_E_DISCONNECTED). Keep the VM alive while any container is non-terminal or still
+    // externally referenced.
     return std::ranges::any_of(m_containers, [](const auto& entry) {
         const auto state = entry.second->State();
-        return state == WslcContainerStateCreated || state == WslcContainerStateRunning;
+        if (state == WslcContainerStateCreated || state == WslcContainerStateRunning)
+        {
+            return true;
+        }
+
+        return entry.second->IsExternallyReferenced();
     });
 }
 

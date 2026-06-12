@@ -112,6 +112,12 @@ public:
 
     void CopyTo(IWSLCContainer** Container) const;
 
+    // Returns true if a client still holds a reference to this container's COM wrapper (i.e. the
+    // wrapper's reference count exceeds the single reference owned internally by the impl). Used by
+    // the idle worker so the VM is not torn down out from under an outstanding container proxy,
+    // which would otherwise leave the client with RPC_E_DISCONNECTED.
+    bool IsExternallyReferenced() const noexcept;
+
     const std::string& Image() const noexcept;
     const std::string& Name() const noexcept;
     WSLCContainerState State() const noexcept;
@@ -229,6 +235,9 @@ class DECLSPEC_UUID("B1F1C4E3-C225-4CAE-AD8A-34C004DE1AE4") WSLCContainer
 {
 
 public:
+    using RuntimeClassBase =
+        Microsoft::WRL::RuntimeClass<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IWSLCContainer, IFastRundown, ISupportErrorInfo>;
+
     WSLCContainer(WSLCContainerImpl* impl, WSLCSession& session, std::function<void(const WSLCContainerImpl*)>&& OnDeleted);
 
     IFACEMETHOD(Attach)(_In_opt_ LPCSTR DetachKeys, _Out_ WSLCHandle* Stdin, _Out_ WSLCHandle* Stdout, _Out_ WSLCHandle* Stderr) override;
@@ -250,6 +259,19 @@ public:
     IFACEMETHOD(DisconnectFromNetwork)(_In_ LPCSTR NetworkName) override;
 
     IFACEMETHOD(InterfaceSupportsErrorInfo)(REFIID riid);
+
+    // RuntimeClass reference-count override. When a client releases its last proxy (leaving only the
+    // single internal reference owned by WSLCContainerImpl::m_comWrapper), wake the idle worker so
+    // the VM can be reclaimed. This pairs with WSLCContainerImpl::IsExternallyReferenced(), which
+    // keeps the VM alive while a client still holds a container proxy; without this signal the idle
+    // worker would never re-evaluate after the proxy was released and the VM would stay up forever.
+    ULONG STDMETHODCALLTYPE Release() override;
+
+    // Returns true if a client still holds a reference to this wrapper, i.e. the reference count
+    // exceeds the single internal reference owned by WSLCContainerImpl::m_comWrapper. Reads the
+    // count via an AddRef + base Release round-trip that deliberately bypasses the Release() override
+    // above, so querying does not itself wake the idle worker.
+    bool HasExternalReference() noexcept;
 
     // Cache read-only properties so they remain accessible after the impl is disconnected.
     // Called from WSLCContainerImpl::PrepareDisconnectComWrapper() while m_lock is held exclusively.

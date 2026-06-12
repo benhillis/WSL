@@ -679,6 +679,21 @@ void WSLCContainerImpl::CopyTo(IWSLCContainer** Container) const
     THROW_IF_FAILED(m_comWrapper.CopyTo(Container));
 }
 
+bool WSLCContainerImpl::IsExternallyReferenced() const noexcept
+{
+    auto lock = m_lock.lock_shared();
+
+    // The impl owns exactly one reference to the COM wrapper (m_comWrapper); any additional
+    // references belong to clients holding marshaled proxies. A null wrapper means the container has
+    // already been disconnected, so there is nothing left to keep the VM alive for.
+    if (m_comWrapper == nullptr)
+    {
+        return false;
+    }
+
+    return m_comWrapper->HasExternalReference();
+}
+
 void WSLCContainerImpl::Attach(LPCSTR DetachKeys, WSLCHandle* Stdin, WSLCHandle* Stdout, WSLCHandle* Stderr) const
 {
     auto lock = m_lock.lock_shared();
@@ -1269,6 +1284,12 @@ void WSLCContainerImpl::Exec(const WSLCProcessOptions* Options, const WSLCProces
         } while (!control->GetExitEvent().wait(100));
 
         auto process = wil::MakeOrThrow<WSLCProcess>(std::move(control), std::move(io), Options->Flags);
+
+        // The exec'd process wrapper is handed to the client and is not retained internally, so its
+        // lifetime tracks the client's proxy. Bind a keep-alive token to it so the idle worker does
+        // not tear the VM down (killing the process) while the client still holds the proxy.
+        process->SetKeepAliveToken(m_wslcSession.CreateActivityToken());
+
         THROW_IF_FAILED(process.CopyTo(__uuidof(IWSLCProcess), (void**)Process));
     }
     CATCH_AND_THROW_DOCKER_USER_ERROR("Failed to exec process in container %hs", m_id.c_str());
@@ -2167,6 +2188,33 @@ __requires_lock_held(m_lock) void WSLCContainerImpl::Transition(WSLCContainerSta
 WSLCContainer::WSLCContainer(WSLCContainerImpl* impl, WSLCSession& session, std::function<void(const WSLCContainerImpl*)>&& OnDeleted) :
     COMImplClass<WSLCContainerImpl>(impl), m_session(session), m_onDeleted(std::move(OnDeleted))
 {
+}
+
+ULONG STDMETHODCALLTYPE WSLCContainer::Release()
+{
+    const ULONG count = RuntimeClassBase::Release();
+
+    // A count of 1 means only WSLCContainerImpl::m_comWrapper (the single internal reference) is
+    // left, i.e. a client just released its last proxy. Wake the idle worker so the now-idle VM can
+    // be reclaimed. N.B. at count 0 the object has already been destroyed, so members (including
+    // m_session) must not be touched on that path.
+    if (count == 1)
+    {
+        m_session.RequestIdleCheck();
+    }
+
+    return count;
+}
+
+bool WSLCContainer::HasExternalReference() noexcept
+{
+    // Read the current reference count without retaining a lasting reference. Call the base
+    // Release() directly (not the override above) so this query never triggers a spurious idle
+    // check, which would otherwise re-arm the idle worker in a busy loop. Safe because the caller
+    // (WSLCContainerImpl, via its m_comWrapper reference) guarantees the count cannot reach zero
+    // and destroy the object here.
+    AddRef();
+    return RuntimeClassBase::Release() > 1;
 }
 
 HRESULT WSLCContainer::Attach(LPCSTR DetachKeys, WSLCHandle* Stdin, WSLCHandle* Stdout, WSLCHandle* Stderr)

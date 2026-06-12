@@ -239,6 +239,13 @@ public:
     // Safe to call from any thread, including IO relay / container callbacks.
     void RequestIdleCheck() noexcept;
 
+    // Creates an opaque activity token that holds a reference on this session's activity count for
+    // its lifetime, deferring idle teardown of the VM until every outstanding token is released.
+    // Used both for transient client operations (BeginContainerOperation) and to keep the VM alive
+    // for the lifetime of a process whose wrapper a client may keep (root-namespace and exec'd
+    // processes).
+    Microsoft::WRL::ComPtr<IUnknown> CreateActivityToken();
+
 private:
     ULONG m_id = 0;
 
@@ -271,12 +278,6 @@ private:
     _Requires_exclusive_lock_held_(m_lock)
     bool HasActiveContainerLockHeld();
     void EnsureVmRunning();
-
-    // Creates an opaque activity token that holds a reference on this session's activity count for
-    // its lifetime, deferring idle teardown of the VM until every outstanding token is released.
-    // Used both for transient client operations (BeginContainerOperation) and to keep the VM alive
-    // for the lifetime of a root-namespace process.
-    Microsoft::WRL::ComPtr<IUnknown> CreateActivityToken();
 
     void IdleWorker();
     bool IdleTerminationEnabled() const noexcept;
