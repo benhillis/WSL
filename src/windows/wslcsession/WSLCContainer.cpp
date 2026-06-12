@@ -2188,19 +2188,31 @@ __requires_lock_held(m_lock) void WSLCContainerImpl::Transition(WSLCContainerSta
 WSLCContainer::WSLCContainer(WSLCContainerImpl* impl, WSLCSession& session, std::function<void(const WSLCContainerImpl*)>&& OnDeleted) :
     COMImplClass<WSLCContainerImpl>(impl), m_session(session), m_onDeleted(std::move(OnDeleted))
 {
+    // Bind the idle-check signaler to the session's shared idle state rather than to m_session, so
+    // Release() can wake the idle worker without dereferencing the (possibly torn-down) session. The
+    // captured shared_ptr keeps the idle state alive independently of the session's lifetime.
+    std::shared_ptr<WSLCSession::IdleState> idleState = session.m_idleState;
+    m_requestIdleCheck = [idleState = std::move(idleState)]() { idleState->IdleCheckEvent.SetEvent(); };
 }
 
 ULONG STDMETHODCALLTYPE WSLCContainer::Release()
 {
+    // Snapshot the signaler on the stack BEFORE dropping our reference. Once Release() returns, this
+    // object may already be gone: a concurrent owner of the last remaining reference (e.g. container
+    // deletion releasing WSLCContainerImpl::m_comWrapper) can destroy it, and the session itself may
+    // be torn down while a client still holds this proxy. The captured shared state keeps the wake
+    // valid in both cases, so we never touch a member after Release().
+    const std::function<void()> requestIdleCheck = m_requestIdleCheck;
+
     const ULONG count = RuntimeClassBase::Release();
 
     // A count of 1 means only WSLCContainerImpl::m_comWrapper (the single internal reference) is
     // left, i.e. a client just released its last proxy. Wake the idle worker so the now-idle VM can
-    // be reclaimed. N.B. at count 0 the object has already been destroyed, so members (including
-    // m_session) must not be touched on that path.
-    if (count == 1)
+    // be reclaimed. N.B. at count 0 the object has already been destroyed; we deliberately signal
+    // only through the stack-local snapshot, never a member, on any post-Release path.
+    if (count == 1 && requestIdleCheck)
     {
-        m_session.RequestIdleCheck();
+        requestIdleCheck();
     }
 
     return count;

@@ -265,6 +265,8 @@ public:
     // the VM can be reclaimed. This pairs with WSLCContainerImpl::IsExternallyReferenced(), which
     // keeps the VM alive while a client still holds a container proxy; without this signal the idle
     // worker would never re-evaluate after the proxy was released and the VM would stay up forever.
+    // The wake is delivered through the captured m_idleState (not m_session) so it stays safe even
+    // if the wrapper outlives the session or is concurrently destroyed once our reference drops.
     ULONG STDMETHODCALLTYPE Release() override;
 
     // Returns true if a client still holds a reference to this wrapper, i.e. the reference count
@@ -280,6 +282,14 @@ public:
 private:
     WSLCSession& m_session;
     std::function<void(const WSLCContainerImpl*)> m_onDeleted;
+
+    // Wakes the idle worker when the last client proxy is released (see Release()). Bound at
+    // construction to a lambda that captures the session's shared idle state (WSLCSession::IdleState
+    // held via shared_ptr), so signalling never dereferences m_session: the wrapper can outlive the
+    // session (a client keeps this proxy past releasing the session) and can be concurrently
+    // destroyed the instant Release() drops our reference. The captured shared_ptr keeps the idle
+    // state alive and valid in both cases.
+    std::function<void()> m_requestIdleCheck;
 
     // Cached read-only properties populated by CacheState() so they remain
     // accessible after the impl is disconnected.

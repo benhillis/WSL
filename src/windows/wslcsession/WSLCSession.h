@@ -246,6 +246,19 @@ public:
     // processes).
     Microsoft::WRL::ComPtr<IUnknown> CreateActivityToken();
 
+    // Idle-activity state shared between the session and any outstanding activity tokens. Held via
+    // shared_ptr so a token (or a container COM wrapper) can outlive the session (e.g. a client
+    // keeps a root-namespace process or container proxy past releasing the session) and still
+    // safely release its activity reference / wake the idle worker without keeping the session
+    // object alive. Tearing down the session therefore proceeds normally; a late token release
+    // simply decrements the count and signals an event with no waiter. Public so the container COM
+    // wrapper (WSLCContainer) can hold a shared_ptr to it; see WSLCContainer::Release().
+    struct IdleState
+    {
+        std::atomic<int> ActivityCount{0};
+        wil::unique_event IdleCheckEvent{wil::EventOptions::ManualReset};
+    };
+
 private:
     ULONG m_id = 0;
 
@@ -256,17 +269,6 @@ private:
         Starting,
         Running,
         Stopping,
-    };
-
-    // Idle-activity state shared between the session and any outstanding activity tokens. Held via
-    // shared_ptr so a token can outlive the session (e.g. a client keeps a root-namespace process
-    // proxy past releasing the session) and still safely release its activity reference without
-    // keeping the session object alive. Tearing down the session therefore proceeds normally; a
-    // late token release simply decrements the count and signals an event with no waiter.
-    struct IdleState
-    {
-        std::atomic<int> ActivityCount{0};
-        wil::unique_event IdleCheckEvent{wil::EventOptions::ManualReset};
     };
 
     _Requires_exclusive_lock_held_(m_lock)
