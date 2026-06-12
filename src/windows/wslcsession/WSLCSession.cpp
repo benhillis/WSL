@@ -367,7 +367,16 @@ try
 
     // The VM is created lazily on the first operation that requires it (see EnsureVmRunning)
     // and torn down when the session becomes idle. Start the worker that performs idle teardown.
-    m_idleThread = std::thread([this]() { IdleWorker(); });
+    // The body is wrapped so an unexpected throw (e.g. COM initialization failure before the
+    // worker's own try/catch loop) is logged rather than escaping the thread and calling
+    // std::terminate(), which would crash the session process.
+    m_idleThread = std::thread([this]() {
+        try
+        {
+            IdleWorker();
+        }
+        CATCH_LOG()
+    });
 
     return S_OK;
 }
