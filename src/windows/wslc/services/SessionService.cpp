@@ -125,7 +125,10 @@ Session SessionService::CreateDefaultSession()
     auto warningCallback = Microsoft::WRL::Make<WarningCallback>();
     THROW_IF_FAILED(sessionManager->CreateSession(nullptr, WSLCSessionFlagsNone, warningCallback.Get(), &session));
     wsl::windows::common::security::ConfigureForCOMImpersonation(session.get());
-    return Session(std::move(session));
+
+    // Hold the warning callback for the lifetime of the session so warnings emitted by the lazy VM
+    // start (e.g. resource recovery) are still delivered to this CLI invocation.
+    return Session(std::move(session), wil::com_ptr<IWarningCallback>(warningCallback.Get()));
 }
 
 int SessionService::Enter(const std::wstring& storagePath, const std::wstring& displayName)

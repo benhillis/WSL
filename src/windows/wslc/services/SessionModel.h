@@ -19,7 +19,8 @@ namespace wsl::windows::wslc::models {
 
 struct Session
 {
-    explicit Session(wil::com_ptr<IWSLCSession> session) : m_session(std::move(session))
+    explicit Session(wil::com_ptr<IWSLCSession> session, wil::com_ptr<IWarningCallback> warningCallback = {}) :
+        m_session(std::move(session)), m_warningCallback(std::move(warningCallback))
     {
     }
     IWSLCSession* Get() const noexcept
@@ -39,6 +40,11 @@ struct Session
 
 private:
     wil::com_ptr<IWSLCSession> m_session;
+
+    // Kept alive for the lifetime of the session model (i.e. the whole CLI command) so the service
+    // can deliver warnings emitted by lazy/background work — such as resource recovery on the first
+    // VM start — back to this CLI invocation, even though no single COM call carries the callback.
+    wil::com_ptr<IWarningCallback> m_warningCallback;
 };
 
 } // namespace wsl::windows::wslc::models

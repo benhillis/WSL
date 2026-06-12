@@ -10712,6 +10712,10 @@ class WSLCTests
         auto settings = GetDefaultSessionSettings(c_sessionName);
         auto session = CreateSession(settings);
 
+        // Session creation is lazy, so start the VM by launching a process before killing it.
+        WSLCProcessLauncher launcher("/bin/sleep", {"/bin/sleep", "60"});
+        auto process = launcher.Launch(*session);
+
         KillVmByOwner(c_sessionName);
 
         WaitForSessionTermination(session.get());
@@ -10803,6 +10807,10 @@ class WSLCTests
             VERIFY_SUCCEEDED(sessionManager2->CreateSession(&settings2, WSLCSessionFlagsNone, warningCallback.Get(), &session2));
             wsl::windows::common::security::ConfigureForCOMImpersonation(session2.get());
 
+            // The VM (and container recovery) starts lazily on the first operation. Trigger it so
+            // recovery runs and its warning is delivered to the session's warning callback.
+            WSLCProcessLauncher("/bin/sh", {"/bin/sh", "-c", "exit 0"}).Launch(*session2).GetExitEvent().wait(30000);
+
             // Verify the warning matches the expected localized message for the corrupt container.
             auto warnings = warningCallback->GetWarnings();
             auto expectedWarning = std::format(
@@ -10870,6 +10878,10 @@ class WSLCTests
             wil::com_ptr<IWSLCSession> session;
             VERIFY_SUCCEEDED(sessionManager->CreateSession(&settings, WSLCSessionFlagsNone, warningCallback.Get(), &session));
             wsl::windows::common::security::ConfigureForCOMImpersonation(session.get());
+
+            // The VM (and volume recovery) starts lazily on the first operation. Trigger it so
+            // recovery runs and its warning is delivered to the session's warning callback.
+            WSLCProcessLauncher("/bin/sh", {"/bin/sh", "-c", "exit 0"}).Launch(*session).GetExitEvent().wait(30000);
 
             // Verify the warning matches the expected localized message for the missing volume.
             auto warnings = warningCallback->GetWarnings();

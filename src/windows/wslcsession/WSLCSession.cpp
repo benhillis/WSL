@@ -332,6 +332,14 @@ try
     m_git = wil::CoCreateInstance<IGlobalInterfaceTable>(CLSID_StdGlobalInterfaceTable, CLSCTX_INPROC_SERVER);
     THROW_IF_FAILED(m_git->RegisterInterfaceInGlobal(VmFactory, __uuidof(IWSLCVirtualMachineFactory), &m_vmFactoryGitCookie));
 
+    // Park the warning callback too. The VM (and resource recovery) is created lazily on the
+    // first operation, which may not carry its own warning callback, so recovery warnings are
+    // routed back to this callback via AcquireWarningCallback()/WSLCExecutionContext.
+    if (WarningCallback != nullptr)
+    {
+        THROW_IF_FAILED(m_git->RegisterInterfaceInGlobal(WarningCallback, __uuidof(IWarningCallback), &m_warningCallbackGitCookie));
+    }
+
     // Persist a deep copy of the settings (and the creating user's SID) required to
     // (re)create the VM on demand.
     const auto tokenInfo = wil::get_token_information<TOKEN_USER>(GetCurrentProcessToken());
@@ -3286,9 +3294,28 @@ try
         m_vmFactoryGitCookie = 0;
     }
 
+    if (m_warningCallbackGitCookie != 0)
+    {
+        LOG_IF_FAILED(m_git->RevokeInterfaceFromGlobal(m_warningCallbackGitCookie));
+        m_warningCallbackGitCookie = 0;
+    }
+
     return S_OK;
 }
 CATCH_RETURN();
+
+wil::com_ptr<IWarningCallback> WSLCSession::AcquireWarningCallback() const
+{
+    wil::com_ptr<IWarningCallback> callback;
+    if (m_warningCallbackGitCookie != 0)
+    {
+        // Best-effort: the creating client's proxy may already be gone (e.g. the CLI exited before
+        // a later VM restart), in which case the warning falls through to the default sink.
+        LOG_IF_FAILED(m_git->GetInterfaceFromGlobal(m_warningCallbackGitCookie, __uuidof(IWarningCallback), callback.put_void()));
+    }
+
+    return callback;
+}
 
 HRESULT WSLCSession::RegisterCrashDumpCallback(_In_ ICrashDumpCallback* Callback, _Out_ IUnknown** Subscription)
 try
