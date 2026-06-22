@@ -3738,6 +3738,57 @@ Return Value:
     return static_cast<long long>(Info.freeram) * Info.mem_unit;
 }
 
+static long long GetFileRefaults()
+
+/*++
+
+Routine Description:
+
+    This routine returns the cumulative workingset_refault_file counter from /proc/vmstat. A rising
+    counter means file pages that were previously evicted are being faulted back in -- i.e. reclaim (or
+    workload pressure) is cutting into the live working set. The per-interval delta is the sole control
+    signal for gradual reclaim: an idle VM refaults essentially nothing when its cold cache is reclaimed,
+    while a workload actively re-reading what we evict refaults tens of thousands of pages, so the delta
+    cleanly separates "safe to reclaim" from "reclaiming the live set".
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    The cumulative file refault count (in pages), or -1 if unavailable.
+
+--*/
+
+{
+    //
+    // ReadProcFile grows its buffer to read /proc/vmstat in full, so the workingset counters deep in the
+    // file are not truncated away (which would silently disable the refault brake).
+    //
+
+    const auto Content = ReadProcFile("/proc/vmstat");
+    if (!Content)
+    {
+        return -1;
+    }
+
+    const char* Marker = strstr(Content->c_str(), "workingset_refault_file ");
+    if (Marker == nullptr)
+    {
+        return -1;
+    }
+
+    //
+    // The counter is an unsigned cumulative page count; parse it unsigned and clamp to LLONG_MAX so a
+    // value near the top of the range (or a wrap on a very long-lived system) cannot turn negative and
+    // disable the refault brake.
+    //
+
+    const unsigned long long Refaults = strtoull(Marker + (sizeof("workingset_refault_file ") - 1), nullptr, 10);
+    return static_cast<long long>((std::min)(Refaults, static_cast<unsigned long long>(LLONG_MAX)));
+}
+
 namespace {
 
 constexpr auto c_pollInterval = std::chrono::seconds(10);
@@ -3757,10 +3808,23 @@ constexpr long long c_cacheGrowthRearmBytes = 256ll * 1024 * 1024;
 constexpr long long c_floorBaseBytes = 128ll * 1024 * 1024;
 constexpr long long c_gradualHysteresisBytes = 128ll * 1024 * 1024;
 
-// Gradual: reclaim at most this much per interval so the cache bleeds down over several intervals
-// instead of being stripped to the floor in a single pass. This keeps reclaim gentle (a brief idle
-// pause does not evict a whole working set) and meaningfully distinct from the DropCache policy.
-constexpr long long c_gradualStepBytes = 256ll * 1024 * 1024;
+// Gradual: per-interval reclaim probe. It starts at the minimum and doubles (up to the cap) on every
+// interval that does not provoke refaults, so a genuinely cold cache is handed back in a few intervals
+// instead of dozens; it resets to the minimum whenever the refault brake trips or the floor is reached.
+constexpr long long c_gradualStepMinBytes = 256ll * 1024 * 1024;
+constexpr long long c_gradualStepMaxBytes = 4096ll * 1024 * 1024;
+
+// Gradual: if more than this many file pages refault in one interval (~78 MB at 4 KB pages), reclaim is
+// cutting into the live working set. Measured idle reclaim refaults ~0; a workload actively re-reading
+// what we evict refaults tens of thousands of pages per interval, so this threshold sits cleanly between
+// the two regimes.
+constexpr long long c_refaultBrakePages = 20000;
+
+// Gradual: once the brake trips, skip reclaim for a cooldown that grows exponentially between these
+// bounds each time it re-trips, so a sustained busy workload is probed (and disturbed) at most once per
+// growing window while an idle VM resumes draining as soon as refaults subside.
+constexpr int c_gradualBackoffMinTicks = 3;  // 30s
+constexpr int c_gradualBackoffMaxTicks = 30; // 5 min
 
 // Compaction runs once free memory grows by at least this much since the last compaction.
 constexpr long long c_compactFreeGrowthBytes = 256ll * 1024 * 1024;
@@ -3774,6 +3838,11 @@ struct MemoryReclaimState
     int IdleStreak = 0;
     bool ReclaimedThisIdlePeriod = false;
     long long CacheAtLastDrop = 0;
+
+    // Gradual (refault-driven).
+    long long PreviousRefaults = -1;
+    long long GradualStepBytes = c_gradualStepMinBytes;
+    int GradualBackoff = 0;
 
     long long FreeAtLastCompaction = 0;
 };
@@ -3829,18 +3898,31 @@ Return Value:
     return false;
 }
 
-bool RunGradualTick(MemoryReclaimState& State, bool IntervalIdle)
+bool RunGradualTick(MemoryReclaimState& State)
 
 /*++
 
 Routine Description:
 
-    Runs one interval of gentle reclaim (cold-first via cgroup memory.reclaim). Reclaim is gated on CPU
-    idle (evaluated per interval, with no sustained-idle streak requirement) and drains reclaimable page
-    cache down toward a fixed floor. Reclaim only triggers once the cache exceeds the floor by more than
-    c_gradualHysteresisBytes; this is a trigger threshold (not a retained margin) that keeps reclaim from
-    churning near the floor. At most c_gradualStepBytes is reclaimed per interval so the cache
-    bleeds down over several intervals rather than being stripped to the floor in a single pass.
+    Runs one interval of gentle, cold-first reclaim (via cgroup memory.reclaim) driven entirely by memory
+    usage and the file-refault rate -- not by CPU idle. Each interval:
+
+        1. Computes the file-refault delta since the previous interval. A spike means reclaim (or the
+           workload itself) is faulting back evicted pages, i.e. cutting into the live working set, so it
+           resets the probe and enters an exponentially-growing cooldown.
+
+        2. While cooling off, skips reclaim (counting the cooldown down) so a busy workload is disturbed
+           at most once per growing window. As soon as refaults subside the cooldown expires and draining
+           resumes.
+
+        3. Otherwise reclaims min(excess-above-floor, probe) bytes and, because this interval did not
+           provoke refaults, doubles the probe (up to the cap) so a genuinely cold cache is handed back in
+           a few intervals while a misjudged probe costs at most one interval before the brake trips.
+
+    This naturally achieves the goal -- shrink the guest (and thus the host vmmem backing) quickly when
+    idle -- without ever measuring CPU: an idle VM's reclaimed cold cache does not refault, so the probe
+    accelerates and the cache drains; an active workload's re-reads refault immediately, braking reclaim
+    and protecting the working set.
 
 Return Value:
 
@@ -3849,10 +3931,28 @@ Return Value:
 --*/
 
 {
-    (void)State;
-
-    if (!IntervalIdle)
+    const long long Refaults = GetFileRefaults();
+    const long long RefaultDelta = (Refaults >= 0 && State.PreviousRefaults >= 0) ? (Refaults - State.PreviousRefaults) : 0;
+    if (Refaults >= 0)
     {
+        State.PreviousRefaults = Refaults;
+    }
+
+    if (RefaultDelta > c_refaultBrakePages)
+    {
+        //
+        // Reclaim hit the live set. Reset the probe and cool off, doubling the cooldown each time the
+        // brake re-trips so a sustained busy workload is probed only rarely.
+        //
+        State.GradualStepBytes = c_gradualStepMinBytes;
+        const int Next = (State.GradualBackoff > 0) ? (State.GradualBackoff * 2) : c_gradualBackoffMinTicks;
+        State.GradualBackoff = (std::min)(c_gradualBackoffMaxTicks, Next);
+        return false;
+    }
+
+    if (State.GradualBackoff > 0)
+    {
+        State.GradualBackoff -= 1;
         return false;
     }
 
@@ -3865,14 +3965,27 @@ Return Value:
     const long long Excess = Cache - c_floorBaseBytes;
     if (Excess <= c_gradualHysteresisBytes)
     {
+        //
+        // At (or near) the floor: nothing worth reclaiming. Reset the probe so the next inflation starts
+        // gently again.
+        //
+        State.GradualStepBytes = c_gradualStepMinBytes;
         return false;
     }
 
-    // Cap each interval to a step so the cache bleeds down gradually instead of cliffing to the floor.
-    const long long ToFree = (std::min)(Excess, c_gradualStepBytes);
+    // Reclaim only the cold excess, capped to the current probe so a misjudged interval cannot evict more
+    // than one step of the working set before the refault brake reacts.
+    const long long ToFree = (std::min)(Excess, State.GradualStepBytes);
 
     // Best-effort: RequestCgroupReclaim suppresses the expected EAGAIN and never throws.
-    return RequestCgroupReclaim(ToFree);
+    const bool Reclaimed = RequestCgroupReclaim(ToFree);
+
+    //
+    // This interval did not provoke refaults, so the cache being drained is cold: accelerate the probe
+    // (up to the cap) so a large cold cache is released in a few intervals instead of dozens.
+    //
+    State.GradualStepBytes = (std::min)(c_gradualStepMaxBytes, State.GradualStepBytes * 2);
+    return Reclaimed;
 }
 
 bool RunDropCacheTick(MemoryReclaimState& State, bool IntervalIdle)
@@ -3971,9 +4084,12 @@ Routine Description:
 
     The policy is:
 
-        1. Gradual mode (gentle, cold-first via cgroup memory.reclaim) is gated on per-interval CPU idle
-           and drains reclaimable page cache down toward a fixed floor. It triggers only once the cache
-           exceeds the floor by a hysteresis threshold, so it does not churn near the floor.
+        1. Gradual mode (gentle, cold-first via cgroup memory.reclaim) is driven by memory usage and the
+           file-refault rate -- not CPU idle. It drains reclaimable cache toward a fixed floor with an
+           accelerating per-interval probe, and brakes (with an exponential cooldown) whenever refaults
+           show it is cutting into the live working set. Because idle cold cache does not refault when
+           reclaimed, this drains the guest -- and shrinks the host vmmem backing -- promptly when the VM
+           goes quiet, while an active workload's re-reads brake reclaim and protect its working set.
 
         2. DropCache mode (the indiscriminate sledgehammer: drop_caches evicts the entire page cache,
            hot and cold alike) cannot run safely under load, so it stays gated on sustained CPU idle. It
@@ -3986,6 +4102,7 @@ Routine Description:
 
     CPU utilization is measured over each interval using all non-idle CPU time (user, system, irq,
     softirq, steal) rather than just user time, so kernel-bound work keeps the VM out of the idle state.
+    Only DropCache mode consumes this signal; Gradual mode ignores it.
 
 Arguments:
 
@@ -4071,7 +4188,7 @@ try
 
                 const bool IntervalIdle = (TotalDelta == 0) || (BusyDelta * 1000 <= TotalDelta * c_busyThresholdPerMille);
 
-                const bool Reclaimed = (Mode == LxMiniInitMemoryReclaimModeGradual) ? RunGradualTick(State, IntervalIdle)
+                const bool Reclaimed = (Mode == LxMiniInitMemoryReclaimModeGradual) ? RunGradualTick(State)
                                                                                     : RunDropCacheTick(State, IntervalIdle);
 
                 RunCompactionTick(State, Reclaimed);
