@@ -3843,6 +3843,8 @@ struct MemoryReclaimState
     long long PreviousRefaults = -1;
     long long GradualStepBytes = c_gradualStepMinBytes;
     int GradualBackoff = 0;
+    int GradualBackoffScale = c_gradualBackoffMinTicks;
+    int GradualCalmStreak = 0;
 
     long long FreeAtLastCompaction = 0;
 };
@@ -3942,11 +3944,14 @@ Return Value:
     {
         //
         // Reclaim hit the live set. Reset the probe and cool off, doubling the cooldown each time the
-        // brake re-trips so a sustained busy workload is probed only rarely.
+        // brake re-trips so a sustained busy workload is probed only rarely. The window length is held in
+        // a persistent scale (not the live countdown, which has already reached zero by the time the next
+        // brake fires) so it actually grows toward the cap instead of resetting to the minimum each trip.
         //
         State.GradualStepBytes = c_gradualStepMinBytes;
-        const int Next = (State.GradualBackoff > 0) ? (State.GradualBackoff * 2) : c_gradualBackoffMinTicks;
-        State.GradualBackoff = (std::min)(c_gradualBackoffMaxTicks, Next);
+        State.GradualCalmStreak = 0;
+        State.GradualBackoff = State.GradualBackoffScale;
+        State.GradualBackoffScale = (std::min)(c_gradualBackoffMaxTicks, State.GradualBackoffScale * 2);
         return false;
     }
 
@@ -3979,6 +3984,17 @@ Return Value:
 
     // Best-effort: RequestCgroupReclaim suppresses the expected EAGAIN and never throws.
     const bool Reclaimed = RequestCgroupReclaim(ToFree);
+
+    //
+    // A clean (non-braking) reclaim means the workload is not fighting us. After sustained calm, relax
+    // the backoff scale back toward the minimum so a VM that has gone idle again resumes fast draining
+    // instead of staying stuck at a multi-minute probe interval learned during an earlier busy spell.
+    //
+    if (++State.GradualCalmStreak >= c_gradualBackoffMaxTicks && State.GradualBackoffScale > c_gradualBackoffMinTicks)
+    {
+        State.GradualBackoffScale = (std::max)(c_gradualBackoffMinTicks, State.GradualBackoffScale / 2);
+        State.GradualCalmStreak = 0;
+    }
 
     //
     // This interval did not provoke refaults, so the cache being drained is cold: accelerate the probe
