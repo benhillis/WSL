@@ -3738,6 +3738,36 @@ Return Value:
     return static_cast<long long>(Info.freeram) * Info.mem_unit;
 }
 
+static long long GetTotalMemoryBytes()
+
+/*++
+
+Routine Description:
+
+    This routine returns the guest's total RAM (in bytes), used to scale the adaptive reclaim floor cap
+    relative to the configured VM size rather than a fixed absolute value.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    Total memory in bytes, or -1 on failure.
+
+--*/
+
+{
+    struct sysinfo Info = {};
+    if (sysinfo(&Info) < 0)
+    {
+        LOG_ERROR("sysinfo failed {}", errno);
+        return -1;
+    }
+
+    return static_cast<long long>(Info.totalram) * Info.mem_unit;
+}
+
 static long long GetFileRefaults()
 
 /*++
@@ -3802,11 +3832,20 @@ constexpr unsigned long long c_busyThresholdPerMille = 5; // 0.5%
 constexpr int c_dropCacheIdleIntervals = 30; // 5 minutes
 constexpr long long c_cacheGrowthRearmBytes = 256ll * 1024 * 1024;
 
-// Gradual: reclaimable cache below c_floorBaseBytes is always retained. Reclaim only triggers once the
-// excess above the floor exceeds c_gradualHysteresisBytes; this is a trigger threshold (not a retained
-// margin) that keeps reclaim from churning near the floor. Once triggered it drains toward the floor.
+// Gradual: adaptive floor of reclaimable cache to retain. It starts at c_floorBaseBytes and reclaim only
+// triggers once the cache exceeds the floor by more than c_gradualHysteresisBytes (a trigger threshold,
+// not a retained margin, that keeps reclaim from churning near the floor). When reclaim provokes refaults
+// the floor is raised to protect the cache actually in use, and it decays back toward the base only after
+// sustained calm so a learned working set is held steady instead of being re-probed (and re-evicted)
+// every tick. The cap is scaled to a fraction of guest RAM at startup (see c_floorMaxRam*), so large
+// working sets on large VMs can be fully protected; the fallback applies only if total RAM is unknown.
 constexpr long long c_floorBaseBytes = 128ll * 1024 * 1024;
 constexpr long long c_gradualHysteresisBytes = 128ll * 1024 * 1024;
+constexpr long long c_floorMaxFallbackBytes = 4096ll * 1024 * 1024;
+constexpr long long c_floorMaxRamNumerator = 3;
+constexpr long long c_floorMaxRamDenominator = 4;
+constexpr long long c_floorDecayBytes = 64ll * 1024 * 1024;
+constexpr int c_floorDecayAfterCalmTicks = 6; // 60s
 
 // Gradual: per-interval reclaim probe. It starts at the minimum and doubles (up to the cap) on every
 // interval that does not provoke refaults, so a genuinely cold cache is handed back in a few intervals
@@ -3845,6 +3884,11 @@ struct MemoryReclaimState
     int GradualBackoff = 0;
     int GradualBackoffScale = c_gradualBackoffMinTicks;
     int GradualCalmStreak = 0;
+
+    // Gradual adaptive floor.
+    long long FloorBytes = c_floorBaseBytes;
+    long long FloorMaxBytes = c_floorMaxFallbackBytes;
+    int FloorCalmStreak = 0;
 
     long long FreeAtLastCompaction = 0;
 };
@@ -3900,6 +3944,45 @@ Return Value:
     return false;
 }
 
+void RaiseFloorToProtect(MemoryReclaimState& State, long long Cache)
+
+/*++
+
+Routine Description:
+
+    Reclaim just hit the live set (the refault brake tripped). Rather than ramping the floor up over many
+    thrashing intervals, this immediately raises it to protect the cache that is actually in use: it jumps
+    to at least the current reclaimable cache (plus a hysteresis margin) so reclaim stops cutting into the
+    working set on this very interval. The slow calm-time decay then re-probes downward gently, so an
+    over-estimate self-corrects without re-thrashing. The floor never exceeds State.FloorMaxBytes.
+
+--*/
+
+{
+    const long long Protect = (Cache < 0) ? (State.FloorBytes * 2) : (Cache + c_gradualHysteresisBytes);
+    State.FloorBytes = (std::min)(State.FloorMaxBytes, (std::max)(State.FloorBytes * 2, Protect));
+    State.FloorCalmStreak = 0;
+}
+
+void DecayFloorAfterCalm(MemoryReclaimState& State)
+
+/*++
+
+Routine Description:
+
+    Relaxes the adaptive floor toward the base, but only after sustained calm, so a learned working set is
+    not immediately re-probed (and re-evicted) the moment reclaim stops provoking refaults.
+
+--*/
+
+{
+    State.FloorCalmStreak += 1;
+    if (State.FloorCalmStreak >= c_floorDecayAfterCalmTicks && State.FloorBytes > c_floorBaseBytes)
+    {
+        State.FloorBytes = (std::max)(c_floorBaseBytes, State.FloorBytes - c_floorDecayBytes);
+    }
+}
+
 bool RunGradualTick(MemoryReclaimState& State)
 
 /*++
@@ -3911,7 +3994,8 @@ Routine Description:
 
         1. Computes the file-refault delta since the previous interval. A spike means reclaim (or the
            workload itself) is faulting back evicted pages, i.e. cutting into the live working set, so it
-           resets the probe and enters an exponentially-growing cooldown.
+           raises the adaptive floor to protect the cache in use, resets the probe, and enters an
+           exponentially-growing cooldown.
 
         2. While cooling off, skips reclaim (counting the cooldown down) so a busy workload is disturbed
            at most once per growing window. As soon as refaults subside the cooldown expires and draining
@@ -3919,7 +4003,9 @@ Routine Description:
 
         3. Otherwise reclaims min(excess-above-floor, probe) bytes and, because this interval did not
            provoke refaults, doubles the probe (up to the cap) so a genuinely cold cache is handed back in
-           a few intervals while a misjudged probe costs at most one interval before the brake trips.
+           a few intervals while a misjudged probe costs at most one interval before the brake trips. The
+           adaptive floor decays back toward the base after sustained calm so an over-estimate of the
+           working set is gently re-probed downward.
 
     This naturally achieves the goal -- shrink the guest (and thus the host vmmem backing) quickly when
     idle -- without ever measuring CPU: an idle VM's reclaimed cold cache does not refault, so the probe
@@ -3940,14 +4026,18 @@ Return Value:
         State.PreviousRefaults = Refaults;
     }
 
+    const long long Cache = GetReclaimableCacheBytes();
+
     if (RefaultDelta > c_refaultBrakePages)
     {
         //
-        // Reclaim hit the live set. Reset the probe and cool off, doubling the cooldown each time the
-        // brake re-trips so a sustained busy workload is probed only rarely. The window length is held in
-        // a persistent scale (not the live countdown, which has already reached zero by the time the next
-        // brake fires) so it actually grows toward the cap instead of resetting to the minimum each trip.
+        // Reclaim hit the live set. Raise the adaptive floor to protect the cache actually in use so
+        // reclaim stops cutting into the working set, then reset the probe and cool off. The cooldown
+        // doubles each time the brake re-trips; the window length is held in a persistent scale (not the
+        // live countdown, which has already reached zero by the time the next brake fires) so it actually
+        // grows toward the cap instead of resetting to the minimum each trip.
         //
+        RaiseFloorToProtect(State, Cache);
         State.GradualStepBytes = c_gradualStepMinBytes;
         State.GradualCalmStreak = 0;
         State.GradualBackoff = State.GradualBackoffScale;
@@ -3961,25 +4051,27 @@ Return Value:
         return false;
     }
 
-    const long long Cache = GetReclaimableCacheBytes();
     if (Cache < 0)
     {
         return false;
     }
 
-    const long long Excess = Cache - c_floorBaseBytes;
+    const long long Excess = Cache - State.FloorBytes;
     if (Excess <= c_gradualHysteresisBytes)
     {
         //
         // At (or near) the floor: nothing worth reclaiming. Reset the probe so the next inflation starts
-        // gently again.
+        // gently again, and decay the floor after sustained calm so a learned working set is eventually
+        // re-probed downward.
         //
         State.GradualStepBytes = c_gradualStepMinBytes;
+        DecayFloorAfterCalm(State);
         return false;
     }
 
     // Reclaim only the cold excess, capped to the current probe so a misjudged interval cannot evict more
     // than one step of the working set before the refault brake reacts.
+    DecayFloorAfterCalm(State);
     const long long ToFree = (std::min)(Excess, State.GradualStepBytes);
 
     // Best-effort: RequestCgroupReclaim suppresses the expected EAGAIN and never throws.
@@ -4161,6 +4253,12 @@ try
             }
 
             MemoryReclaimState State;
+
+            const long long TotalMemory = GetTotalMemoryBytes();
+            if (TotalMemory > 0)
+            {
+                State.FloorMaxBytes = (std::max)(c_floorBaseBytes, (TotalMemory * c_floorMaxRamNumerator) / c_floorMaxRamDenominator);
+            }
 
             for (;;)
             {
